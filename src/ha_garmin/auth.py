@@ -15,6 +15,7 @@ import base64
 import contextlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -102,6 +103,9 @@ def _http_post(url: str, **kwargs: Any) -> Any:
 class GarminAuth:
     """Authentication engine using native DI Bearer tokens."""
 
+    _CSRF_RE = re.compile(r'name="_csrf"\s+value="(.+?)"')
+    _TITLE_RE = re.compile(r"<title>(.+?)</title>")
+
     def __init__(self, is_cn: bool = False) -> None:
         self._is_cn = is_cn
         domain = "garmin.cn" if is_cn else "garmin.com"
@@ -170,8 +174,17 @@ class GarminAuth:
             return self._mobile_login(sess, email, password)
         except GarminAPIError as e:
             if "429" in str(e):
-                _LOGGER.error("Mobile login returned 429. Aborting to avoid IP ban.")
-                raise
+                _LOGGER.warning(
+                    "Mobile login returned 429. Attempting SSO widget fallback..."
+                )
+                try:
+                    sess = cffi_requests.Session(impersonate="chrome")
+                    return self._widget_web_login(sess, email, password)
+                except (GarminAuthError, GarminMFARequired):
+                    raise
+                except Exception as we:
+                    _LOGGER.warning("Widget login failed: %s", we)
+                    raise
             _LOGGER.warning("iOS mobile login failed: %s — trying portal fallback", e)
         except (GarminAuthError, GarminMFARequired):
             raise
@@ -256,6 +269,114 @@ class GarminAuth:
 
         raise GarminAPIError(f"Mobile login failed: {res}")
 
+    # -- WIDGET WEB LOGIN (fallback) --
+
+    def _widget_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
+        """Login via the SSO embed HTML widget to bypass clientId rate limits."""
+        sso_base = f"{self._sso}/sso"
+        sso_embed = f"{sso_base}/embed"
+        embed_params = {
+            "id": "gauth-widget",
+            "embedWidget": "true",
+            "gauthHost": sso_base,
+        }
+        signin_params = {
+            **embed_params,
+            "gauthHost": sso_embed,
+            "service": sso_embed,
+            "source": sso_embed,
+            "redirectAfterAccountLoginUrl": sso_embed,
+            "redirectAfterAccountCreationUrl": sso_embed,
+        }
+
+        # Step 1: GET embed page
+        r = sess.get(sso_embed, params=embed_params)
+        if not r.ok:
+            raise GarminAPIError(f"Widget embed returned {r.status_code}")
+
+        # Step 2: GET signin page for CSRF
+        r = sess.get(
+            f"{sso_base}/signin", params=signin_params, headers={"Referer": sso_embed}
+        )
+        csrf_match = self._CSRF_RE.search(r.text)
+        if not csrf_match:
+            raise GarminAPIError("Widget login: missing CSRF token")
+
+        # Step 3: POST credentials
+        r = sess.post(
+            f"{sso_base}/signin",
+            params=signin_params,
+            headers={"Referer": r.url},
+            data={
+                "username": email,
+                "password": password,
+                "embed": "true",
+                "_csrf": csrf_match.group(1),
+            },
+            timeout=30,
+        )
+
+        title_match = self._TITLE_RE.search(r.text)
+        title = title_match.group(1) if title_match else ""
+
+        if "MFA" in title:
+            # Requires MFA
+            self._mfa_session = sess
+            self._mfa_login_params = signin_params
+            self._mfa_post_headers = {"Referer": r.url}
+            self._mfa_flow = "widget"
+            self._widget_last_resp = r
+            raise GarminMFARequired("mfa_required")
+
+        if title != "Success":
+            raise GarminAuthError(f"Widget authentication failed: {title}")
+
+        # Step 4: Extract service ticket
+        ticket_match = re.search(r'embed\?ticket=([^"]+)"', r.text)
+        if not ticket_match:
+            raise GarminAPIError("Widget login: missing service ticket")
+
+        self._exchange_service_ticket(ticket_match.group(1), service_url=sso_embed)
+        return AuthResult(success=True)
+
+    def _complete_mfa_widget(self, mfa_code: str) -> None:
+        """Complete MFA for widget flow."""
+        sess = getattr(self, "_mfa_session", None)
+        r = getattr(self, "_widget_last_resp", None)
+        if not sess or not r:
+            raise GarminAuthError("Missing widget MFA context")
+
+        csrf_match = self._CSRF_RE.search(r.text)
+        if not csrf_match:
+            raise GarminAuthError("Widget MFA: missing CSRF token")
+
+        r = sess.post(
+            f"{self._sso}/sso/verifyMFA/loginEnterMfaCode",
+            params=getattr(self, "_mfa_login_params", {}),
+            headers=getattr(self, "_mfa_post_headers", {}),
+            data={
+                "mfa-code": mfa_code,
+                "embed": "true",
+                "_csrf": csrf_match.group(1),
+                "fromPage": "setupEnterMfaCode",
+            },
+            timeout=30,
+        )
+
+        title_match = self._TITLE_RE.search(r.text)
+        title = title_match.group(1) if title_match else ""
+
+        if title != "Success":
+            raise GarminAuthError(f"Widget MFA failed: {title}")
+
+        ticket_match = re.search(r'embed\?ticket=([^"]+)"', r.text)
+        if not ticket_match:
+            raise GarminAuthError("Widget MFA: missing service ticket")
+
+        self._exchange_service_ticket(
+            ticket_match.group(1), service_url=f"{self._sso}/sso/embed"
+        )
+
     # -- PORTAL WEB LOGIN (fallback) --
 
     def _portal_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
@@ -280,6 +401,7 @@ class GarminAuth:
 
         import random
         from time import sleep
+
         sleep(random.uniform(30, 45))  # <-- It goes right here!
 
         # Step 2: Build the POST parameters and submit the login
@@ -359,8 +481,12 @@ class GarminAuth:
 
     def _complete_mfa(self, mfa_code: str) -> None:
         """Complete MFA — uses the endpoint matching the login flow that triggered it."""
-        sess = self._mfa_session
         flow = getattr(self, "_mfa_flow", "portal")
+        if flow == "widget":
+            self._complete_mfa_widget(mfa_code)
+            return
+
+        sess = self._mfa_session
 
         mfa_json: dict[str, Any] = {
             "mfaMethod": getattr(self, "_mfa_method", "email"),
