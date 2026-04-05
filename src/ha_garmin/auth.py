@@ -1,10 +1,12 @@
 """Garmin Connect authentication using native DI Bearer tokens.
 
-Flow:
-1. Portal web flow with curl_cffi (multiple TLS fingerprints — safari first).
-2. Exchange CAS service ticket for native DI Bearer token via diauth.garmin.com.
-3. API requests use Bearer token directly against connectapi.garmin.com,
-   bypassing Cloudflare TLS inspection entirely.
+Primary flow (iOS mobile app):
+1. POST sso.garmin.com/mobile/api/login  (iOS Safari UA, GCM_IOS_DARK client)
+2. POST diauth.garmin.com/di-oauth2-service/oauth/token  (service_ticket grant) → DI Bearer token
+
+Fallback flow (portal web):
+1. POST sso.garmin.com/portal/api/login  (desktop browser UA)
+2. POST diauth.garmin.com/di-oauth2-service/oauth/token  (service_ticket grant) → DI Bearer token
 """
 
 from __future__ import annotations
@@ -30,20 +32,22 @@ from .models import AuthResult
 
 _LOGGER = logging.getLogger(__name__)
 
-# Auth constants (matching Android GCM app)
+# -- iOS mobile app constants --
+IOS_SSO_CLIENT_ID = "GCM_IOS_DARK"
+IOS_SERVICE_URL = "https://mobile.integration.garmin.com/gcm/ios"
+IOS_LOGIN_UA = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
+    "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+)
+
+
+# -- Portal (fallback) constants --
 PORTAL_SSO_CLIENT_ID = "GarminConnect"
 DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
-
-NATIVE_API_USER_AGENT = "GCM-Android-5.23"
-NATIVE_X_GARMIN_USER_AGENT = (
-    "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; "
-    "Android/33; Dalvik/2.1.0"
-)
-
 DI_TOKEN_URL = "https://diauth.garmin.com/di-oauth2-service/oauth/token"
 DI_GRANT_TYPE = (
     "https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket"
@@ -52,6 +56,14 @@ DI_CLIENT_IDS = (
     "GARMIN_CONNECT_MOBILE_ANDROID_DI_2025Q2",
     "GARMIN_CONNECT_MOBILE_ANDROID_DI_2024Q4",
     "GARMIN_CONNECT_MOBILE_ANDROID_DI",
+    "GARMIN_CONNECT_MOBILE_IOS_DI",
+)
+
+# -- API request headers (Android native, used for actual data calls) --
+NATIVE_API_USER_AGENT = "GCM-Android-5.23"
+NATIVE_X_GARMIN_USER_AGENT = (
+    "com.garmin.android.apps.connectmobile/5.23; ; Google/sdk_gphone64_arm64/google; "
+    "Android/33; Dalvik/2.1.0"
 )
 
 
@@ -75,7 +87,7 @@ def _native_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 
 def _random_browser_headers() -> dict[str, str]:
-    """Generate random browser User-Agent headers; falls back to static Chrome UA."""
+    """Generate random browser UA headers; falls back to static Chrome UA."""
     if HAS_UA_GEN:
         ua = _generate_ua()
         return dict(ua.headers.get())
@@ -148,30 +160,110 @@ class GarminAuth:
 
     # -- LOGIN FLOW --
 
-    async def login(self, email: str, password: str) -> AuthResult:
-        """Login via portal web flow with curl_cffi TLS impersonation."""
-        impersonations = ["safari", "safari_ios", "chrome120", "edge101", "chrome"]
-        last_err: Exception | None = None
-        for imp in impersonations:
+    def login(self, email: str, password: str) -> AuthResult:
+        """Login via iOS mobile flow (primary) or portal web flow (fallback)."""
+        import requests as stdlib_requests
+
+        try:
+            _LOGGER.debug("Trying iOS mobile login flow")
+            sess: Any = stdlib_requests.Session()
+            return self._mobile_login(sess, email, password)
+        except GarminAPIError as e:
+            if "429" in str(e):
+                _LOGGER.error("Mobile login returned 429. Aborting to avoid IP ban.")
+                raise
+            _LOGGER.warning("iOS mobile login failed: %s — trying portal fallback", e)
+        except (GarminAuthError, GarminMFARequired):
+            raise
+        except Exception as e:
+            _LOGGER.warning("iOS mobile login failed: %s — trying portal fallback", e)
+
+        _LOGGER.debug("Trying portal web login flow")
+        for imp in ("safari", "chrome120", "edge101", "chrome"):
             try:
-                _LOGGER.debug("Trying login with impersonation=%s", imp)
-                sess: Any = cffi_requests.Session(impersonate=imp)  # type: ignore[arg-type]
+                sess = cffi_requests.Session(impersonate=imp)  # type: ignore[arg-type]
                 return self._portal_web_login(sess, email, password)
             except (GarminAuthError, GarminMFARequired):
                 raise
             except Exception as e:
-                _LOGGER.debug("Login cffi(%s) failed: %s", imp, e)
-                last_err = e
+                _LOGGER.warning("Portal login cffi(%s) failed: %s", imp, e)
                 continue
-        raise last_err or GarminAPIError("All cffi impersonations failed")
 
-    # -- PORTAL WEB LOGIN (desktop browser flow) --
+        raise GarminAPIError("All login strategies failed (iOS mobile + portal)")
+
+    # -- iOS MOBILE LOGIN --
+
+    def _mobile_login(self, sess: Any, email: str, password: str) -> AuthResult:
+        """Login via sso.garmin.com/mobile/api/login (iOS app flow)."""
+        login_url = f"{self._sso}/mobile/api/login"
+        login_params = {
+            "clientId": IOS_SSO_CLIENT_ID,
+            "locale": "en-US",
+            "service": IOS_SERVICE_URL,
+        }
+        login_headers = {
+            "User-Agent": IOS_LOGIN_UA,
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Origin": self._sso,
+        }
+
+        r = sess.post(
+            login_url,
+            params=login_params,
+            headers=login_headers,
+            json={
+                "username": email,
+                "password": password,
+                "rememberMe": True,
+                "captchaToken": "",
+            },
+            timeout=30,
+        )
+
+        if r.status_code == 429:
+            raise GarminAPIError(
+                "Mobile login returned 429 — IP rate limited by Garmin"
+            )
+
+        try:
+            res = r.json()
+        except Exception as err:
+            raise GarminAPIError(
+                f"Mobile login failed (non-JSON): HTTP {r.status_code}"
+            ) from err
+
+        resp_type = res.get("responseStatus", {}).get("type")
+
+        if resp_type == "MFA_REQUIRED":
+            self._mfa_method = res.get("customerMfaInfo", {}).get(
+                "mfaLastMethodUsed", "email"
+            )
+            self._mfa_session = sess
+            self._mfa_login_params = login_params
+            self._mfa_post_headers = login_headers
+            self._mfa_service_url = IOS_SERVICE_URL
+            self._mfa_flow = "ios"
+            raise GarminMFARequired("mfa_required")
+
+        if resp_type == "SUCCESSFUL":
+            ticket = res["serviceTicketId"]
+            self._exchange_service_ticket(ticket, service_url=IOS_SERVICE_URL)
+            return AuthResult(success=True)
+
+        if resp_type == "INVALID_USERNAME_PASSWORD":
+            raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
+
+        raise GarminAPIError(f"Mobile login failed: {res}")
+
+    # -- PORTAL WEB LOGIN (fallback) --
 
     def _portal_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
-        """Login via /portal/api/login — the same endpoint Garmin Connect React uses."""
+        """Login via /portal/api/login — desktop browser flow."""
         signin_url = f"{self._sso}/portal/sso/en-US/sign-in"
         browser_hdrs = _random_browser_headers()
 
+        # Step 1: GET the signin page to grab initial cookies
         sess.get(
             signin_url,
             params={
@@ -186,6 +278,11 @@ class GarminAuth:
             timeout=30,
         )
 
+        import random
+        from time import sleep
+        sleep(random.uniform(30, 45))  # <-- It goes right here!
+
+        # Step 2: Build the POST parameters and submit the login
         login_params = {
             "clientId": PORTAL_SSO_CLIENT_ID,
             "locale": "en-US",
@@ -237,11 +334,13 @@ class GarminAuth:
             self._mfa_session = sess
             self._mfa_login_params = login_params
             self._mfa_post_headers = post_headers
+            self._mfa_service_url = self._portal_service_url
+            self._mfa_flow = "portal"
             raise GarminMFARequired("mfa_required")
 
         if resp_type == "SUCCESSFUL":
             ticket = res["serviceTicketId"]
-            self._establish_session(ticket, sess=sess)
+            self._exchange_service_ticket(ticket)
             return AuthResult(success=True)
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
@@ -251,7 +350,7 @@ class GarminAuth:
 
     # -- MFA COMPLETION --
 
-    async def complete_mfa(self, mfa_code: str) -> AuthResult:
+    def complete_mfa(self, mfa_code: str) -> AuthResult:
         """Complete MFA verification."""
         if not hasattr(self, "_mfa_session"):
             raise GarminAuthError("No pending MFA session")
@@ -259,8 +358,10 @@ class GarminAuth:
         return AuthResult(success=True)
 
     def _complete_mfa(self, mfa_code: str) -> None:
-        """Complete MFA via portal web flow — tries both portal and mobile endpoints."""
+        """Complete MFA — uses the endpoint matching the login flow that triggered it."""
         sess = self._mfa_session
+        flow = getattr(self, "_mfa_flow", "portal")
+
         mfa_json: dict[str, Any] = {
             "mfaMethod": getattr(self, "_mfa_method", "email"),
             "mfaVerificationCode": mfa_code,
@@ -269,63 +370,49 @@ class GarminAuth:
             "mfaSetup": False,
         }
 
-        mfa_endpoints = [
-            (
-                f"{self._sso}/portal/api/mfa/verifyCode",
-                self._mfa_login_params,
-                self._mfa_post_headers,
-                self._portal_service_url,
-            ),
-        ]
+        if flow == "ios":
+            mfa_url = f"{self._sso}/mobile/api/mfa/verifyCode"
+        else:
+            mfa_url = f"{self._sso}/portal/api/mfa/verifyCode"
 
-        failures: list[str] = []
-        for mfa_url, params, headers, svc_url in mfa_endpoints:
-            try:
-                r = sess.post(
-                    mfa_url, params=params, headers=headers, json=mfa_json, timeout=30
-                )
-            except Exception as e:
-                failures.append(f"{mfa_url}: connection error {e}")
-                continue
+        try:
+            r = sess.post(
+                mfa_url,
+                params=self._mfa_login_params,
+                headers=self._mfa_post_headers,
+                json=mfa_json,
+                timeout=30,
+            )
+        except Exception as e:
+            raise GarminAuthError(f"MFA request failed: {e}") from e
 
-            if r.status_code == 429:
-                failures.append(f"{mfa_url}: HTTP 429")
-                continue
+        if r.status_code == 429:
+            raise GarminAuthError("MFA verification rate limited")
 
-            try:
-                res = r.json()
-            except Exception:
-                failures.append(f"{mfa_url}: HTTP {r.status_code} non-JSON")
-                continue
+        try:
+            res = r.json()
+        except Exception as err:
+            raise GarminAuthError(
+                f"MFA non-JSON response: HTTP {r.status_code}"
+            ) from err
 
-            if res.get("error", {}).get("status-code") == "429":
-                failures.append(f"{mfa_url}: 429 in JSON body")
-                continue
+        if res.get("error", {}).get("status-code") == "429":
+            raise GarminAuthError("MFA verification rate limited")
 
-            if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
-                ticket = res["serviceTicketId"]
-                self._establish_session(ticket, sess=sess, service_url=svc_url)
-                return
+        if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
+            ticket = res["serviceTicketId"]
+            svc_url = IOS_SERVICE_URL if flow == "ios" else self._mfa_service_url
+            self._exchange_service_ticket(ticket, service_url=svc_url)
+            return
 
-            failures.append(f"{mfa_url}: {res}")
+        raise GarminAuthError(f"MFA verification failed: {res}")
 
-        raise GarminAuthError(f"MFA Verification failed: {'; '.join(failures)}")
-
-    # -- SESSION ESTABLISHMENT --
-
-    def _establish_session(
-        self, ticket: str, sess: Any = None, service_url: str | None = None
-    ) -> None:
-        """Exchange a CAS service ticket for a DI Bearer token."""
-        self._exchange_service_ticket(ticket, service_url=service_url)
+    # -- PORTAL TICKET EXCHANGE (fallback) --
 
     def _exchange_service_ticket(
         self, ticket: str, service_url: str | None = None
     ) -> None:
-        """Exchange a CAS service ticket for a native DI Bearer token.
-
-        POST to diauth.garmin.com to get a DI OAuth2 token.
-        """
+        """Exchange a CAS ticket for a DI Bearer token via diauth.garmin.com."""
         svc_url = service_url or self._portal_service_url
 
         di_token = None
@@ -426,11 +513,13 @@ class GarminAuth:
 
     async def refresh_session(self) -> bool:
         """Refresh DI Bearer token using the stored refresh token."""
+        import asyncio
+
         if not self.is_authenticated:
             return False
 
         try:
-            self._refresh_di_token()
+            await asyncio.to_thread(self._refresh_di_token)
             if self._tokenstore_path:
                 with contextlib.suppress(Exception):
                     self.save_session(self._tokenstore_path)
@@ -449,16 +538,16 @@ class GarminAuth:
         data: dict[str, Any] = {
             k: v
             for k, v in {
-                "di_token": self.di_token,
-                "di_refresh_token": self.di_refresh_token,
-                "di_client_id": self.di_client_id,
+                "token": self.di_token,
+                "refresh_token": self.di_refresh_token,
+                "client_id": self.di_client_id,
             }.items()
             if v is not None
         }
 
         p = Path(path).expanduser()
         if p.is_dir() or not str(p).endswith(".json"):
-            p = p / "garmin_tokens.json"
+            p = p / ".garmin_tokens.json"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(data, indent=2))
 
@@ -466,16 +555,16 @@ class GarminAuth:
         """Load tokens from disk."""
         p = Path(path).expanduser()
         if p.is_dir() or not str(p).endswith(".json"):
-            p = p / "garmin_tokens.json"
+            p = p / ".garmin_tokens.json"
         if not p.exists():
             return False
 
         try:
             data = json.loads(p.read_text())
             self._tokenstore_path = str(path)
-            self.di_token = data.get("di_token")
-            self.di_refresh_token = data.get("di_refresh_token")
-            self.di_client_id = data.get("di_client_id")
+            self.di_token = data.get("token")
+            self.di_refresh_token = data.get("refresh_token")
+            self.di_client_id = data.get("client_id")
 
             if not self.is_authenticated:
                 return False

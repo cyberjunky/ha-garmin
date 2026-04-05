@@ -10,11 +10,12 @@ Tokens are saved to .garmin_tokens.json for subsequent runs.
 
 import asyncio
 import json
+import logging
 import os
 from datetime import date, datetime
 from pathlib import Path
 from pprint import pprint
-
+logging.basicConfig(level=logging.INFO)
 from ha_garmin import GarminAuth, GarminClient
 
 # === CREDENTIALS ===
@@ -82,16 +83,13 @@ async def main():
         try:
             from ha_garmin.exceptions import GarminMFARequired
 
-            await auth.login(email, password)
+            auth.login(email, password)
         except GarminMFARequired:
             print("MFA required!")
             mfa_code = input("Enter MFA code: ").strip()
-            await auth.complete_mfa(mfa_code)
+            auth.complete_mfa(mfa_code)
         except Exception as e:
-            print(f"Login failed linearly: {e}")
-            print(
-                "Hint: If 429 Rate Limited, Garmin IP is locked. Wait or use the proxy bypass."
-            )
+            print(f"Login failed: {e}")
             return
 
         print("Seamless Login successful!")
@@ -176,7 +174,7 @@ async def main():
                     print(f"    - {k}")
 
     # === SAVE FULL DATA TO JSON ===
-    output_file = "garmin_data_dump.json"
+    output_file = ".garmin_data_dump.json"
     with open(output_file, "w") as f:
         json.dump(all_data, f, indent=2, default=json_serial)
     print(f"\n\nFull data saved to: {output_file}")

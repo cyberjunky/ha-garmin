@@ -28,26 +28,30 @@ pip install ha-garmin[ua]
 
 ## Usage
 
+### Standalone script
+
+Authentication is synchronous; data fetches run in a thread pool and are awaited.
+
 ```python
+import asyncio
 from datetime import date
-from ha_garmin import GarminClient, GarminAuth
+from ha_garmin import GarminAuth, GarminClient, GarminMFARequired
 
-async def main():
-    auth = GarminAuth()
+# Auth is synchronous
+auth = GarminAuth()
 
-    # Load saved session from disk
-    if not auth.load_session(".garmin_tokens.json"):
-        await auth.login("email@example.com", "password")
+if not auth.load_session(".garmin_tokens.json"):
+    try:
+        auth.login("email@example.com", "password")
+    except GarminMFARequired:
+        mfa_code = input("Enter MFA code: ")
+        auth.complete_mfa(mfa_code)
+    auth.save_session(".garmin_tokens.json")
 
-        # Handle MFA if required
-        if not auth.is_authenticated:
-            mfa_code = input("Enter MFA code: ")
-            await auth.complete_mfa(mfa_code)
+client = GarminClient(auth)
 
-        auth.save_session(".garmin_tokens.json")
 
-    client = GarminClient(auth)
-
+async def fetch_all():
     today = date.today()
     core_data     = await client.fetch_core_data(today)      # Steps, HR, sleep, stress
     body_data     = await client.fetch_body_data(today)      # Weight, body composition, fitness age
@@ -55,18 +59,46 @@ async def main():
     training_data = await client.fetch_training_data(today)  # HRV, training status
     goals_data    = await client.fetch_goals_data()          # Goals, badges
     gear_data     = await client.fetch_gear_data()           # Gear, device alarms
+
+
+asyncio.run(fetch_all())
 ```
 
-## For Home Assistant
+### Home Assistant integration
+
+Set up auth during `async_setup_entry` and pass the client to your coordinators.
 
 ```python
-auth = GarminAuth()
-auth.load_session(config_dir / "garmin_tokens.json")
+from datetime import date, timedelta
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from ha_garmin import GarminAuth, GarminClient
 
-client = GarminClient(auth)
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    auth = GarminAuth()
 
-core_data = await client.fetch_core_data(target_date=date.today())
-body_data = await client.fetch_body_data(target_date=date.today())
+    token_path = hass.config.path(".storage/garmin_tokens.json")
+    if not auth.load_session(token_path):
+        # Initial login must have been completed via the config flow
+        raise ConfigEntryAuthFailed("No valid Garmin session")
+
+    client = GarminClient(auth)
+
+    coordinator = GarminCoreCoordinator(hass, client)
+    await coordinator.async_config_entry_first_refresh()
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    return True
+
+
+class GarminCoreCoordinator(DataUpdateCoordinator):
+    def __init__(self, hass: HomeAssistant, client: GarminClient) -> None:
+        super().__init__(hass, logger=_LOGGER, name="Garmin core", update_interval=timedelta(minutes=15))
+        self._client = client
+
+    async def _async_update_data(self) -> dict:
+        return await self._client.fetch_core_data(date.today())
 ```
 
 ## Coordinator Fetch Methods

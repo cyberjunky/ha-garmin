@@ -1,7 +1,7 @@
 # Custom
 .claude/
-.garmin_tokens.json
-garmin_data_dump.json
+.garmin_tokens*
+.garmin_data_dump*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
