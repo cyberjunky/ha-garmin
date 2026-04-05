@@ -402,7 +402,7 @@ class GarminAuth:
         import random
         from time import sleep
 
-        sleep(random.uniform(30, 45))  # <-- It goes right here!
+        sleep(random.uniform(5, 15))
 
         # Step 2: Build the POST parameters and submit the login
         login_params = {
