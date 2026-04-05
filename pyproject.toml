@@ -1,0 +1,108 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ha-garmin"
+version = "0.1.0"
+description = "Python client for Garmin Connect API"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Ron Klinkien", email = "ron@cyberjunky.nl"}
+]
+keywords = ["garmin", "garmin-connect", "fitness", "api", "health"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Internet :: WWW/HTTP",
+    "Typing :: Typed",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0.0",
+    "curl_cffi>=0.7.4",
+    "requests>=2.28.0",
+]
+
+[project.optional-dependencies]
+ua = [
+    "ua-generator>=1.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+    "types-requests>=2.28.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cyberjunky/ha-garmin"
+Repository = "https://github.com/cyberjunky/ha-garmin"
+Documentation = "https://github.com/cyberjunky/ha-garmin#readme"
+Issues = "https://github.com/cyberjunky/ha-garmin/issues"
+Changelog = "https://github.com/cyberjunky/ha-garmin/releases"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "PIE",    # flake8-pie
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "RUF002", # ambiguous characters in docstrings
+    "RUF012", # mutable class vars (used intentionally in fit.py)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["ha_garmin"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra -q"
+
+[tool.coverage.run]
+source = ["src/ha_garmin"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+show_missing = true
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = false
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
