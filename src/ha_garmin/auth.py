@@ -83,8 +83,14 @@ WIDGET_DELAY_MIN_S = 3.0
 WIDGET_DELAY_MAX_S = 8.0
 
 # -- TLS impersonation profiles --
-MOBILE_IMPERSONATIONS = ("safari_ios", "safari", "chrome120")
-PORTAL_IMPERSONATIONS = ("safari", "safari_ios", "chrome120", "edge101", "chrome")
+MOBILE_IMPERSONATIONS: tuple[str, ...] = ("safari_ios", "safari", "chrome120")
+PORTAL_IMPERSONATIONS: tuple[str, ...] = (
+    "safari",
+    "safari_ios",
+    "chrome120",
+    "edge101",
+    "chrome",
+)
 
 # -- API request headers (Android native, used for actual data calls) --
 NATIVE_API_USER_AGENT = "GCM-Android-5.23"
@@ -250,7 +256,7 @@ class GarminAuth:
         for imp in MOBILE_IMPERSONATIONS:
             try:
                 _LOGGER.debug("mobile+cffi trying impersonation=%s", imp)
-                sess = cffi_requests.Session(impersonate=imp)
+                sess: Any = cffi_requests.Session(impersonate=imp)  # type: ignore[arg-type]
                 return self._do_mobile_login(sess, email, password)
             except (GarminAuthError, GarminMFARequired):
                 raise
@@ -359,7 +365,7 @@ class GarminAuth:
         Uses HTML form flow which bypasses clientId-based rate limits.
         Uses curl_cffi for TLS fingerprinting.
         """
-        sess = cffi_requests.Session(impersonate="chrome", timeout=30)
+        sess: Any = cffi_requests.Session(impersonate="chrome", timeout=30)
         sso_base = f"{self._sso}/sso"
         sso_embed = f"{sso_base}/embed"
         embed_params = {
@@ -500,7 +506,7 @@ class GarminAuth:
         for imp in PORTAL_IMPERSONATIONS:
             try:
                 _LOGGER.debug("portal+cffi trying impersonation=%s", imp)
-                sess = cffi_requests.Session(impersonate=imp)
+                sess: Any = cffi_requests.Session(impersonate=imp)  # type: ignore[arg-type]
                 return self._do_portal_web_login(sess, email, password)
             except (GarminAuthError, GarminMFARequired):
                 raise
