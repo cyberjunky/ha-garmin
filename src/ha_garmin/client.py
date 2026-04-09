@@ -286,37 +286,37 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
             result[kg_key] = _grams_to_kg(result.get(key))
 
     # === HRV: flatten nested structure ===
-    hrv = result.get("hrvStatus", {})
+    hrv = result.get("hrvStatus") or {}
     if hrv:
         result["hrvStatusText"] = (hrv.get("status") or "").capitalize()
         result["hrvWeeklyAvg"] = hrv.get("weeklyAvg")
         result["hrvLastNightAvg"] = hrv.get("lastNightAvg")
         result["hrvLastNight5MinHigh"] = hrv.get("lastNight5MinHigh")
-        baseline = hrv.get("baseline", {})
+        baseline = hrv.get("baseline") or {}
         result["hrvBaselineLowUpper"] = baseline.get("lowUpper")
         result["hrvBaselineBalancedLow"] = baseline.get("balancedLow")
         result["hrvBaselineBalancedUpper"] = baseline.get("balancedUpper")
 
     # === Training: flatten nested structures ===
-    training_readiness = result.get("trainingReadiness", {})
+    training_readiness = result.get("trainingReadiness") or {}
     if training_readiness:
         result["trainingReadinessScore"] = training_readiness.get("score")
         result["trainingReadinessLevel"] = training_readiness.get("level")
 
-    morning_readiness = result.get("morningTrainingReadiness", {})
+    morning_readiness = result.get("morningTrainingReadiness") or {}
     if morning_readiness:
         result["morningTrainingReadinessScore"] = morning_readiness.get("score")
 
-    training_status = result.get("trainingStatus", {})
+    training_status = result.get("trainingStatus") or {}
     if training_status:
         result["trainingStatusPhrase"] = training_status.get("trainingStatusPhrase")
 
     # === Scores: flatten nested structures ===
-    endurance = result.get("enduranceScore", {})
+    endurance = result.get("enduranceScore") or {}
     if endurance:
         result["enduranceScoreValue"] = endurance.get("overallScore")
 
-    hill = result.get("hillScore", {})
+    hill = result.get("hillScore") or {}
     if hill:
         result["hillScoreValue"] = hill.get("overallScore")
 
@@ -1445,15 +1445,15 @@ class GarminClient:
             ) from None
 
         # 400 with uploadId means file was accepted but has validation issues
-        if response.status_code == 400 and body.get("detailedImportResult", {}).get(
+        if response.status_code == 400 and (body.get("detailedImportResult") or {}).get(
             "uploadId"
         ):
             _LOGGER.warning("Upload accepted with warnings: %s", body)
             return body
 
         if response.status_code not in (200, 201, 202):
-            result = body.get("detailedImportResult", {})
-            failures = result.get("failures", [])
+            result = body.get("detailedImportResult") or {}
+            failures = result.get("failures") or []
             if failures:
                 messages = []
                 for failure in failures:
@@ -1538,10 +1538,10 @@ class GarminClient:
 
         if sleep_data:
             try:
-                daily_sleep = sleep_data.get("dailySleepDTO", {})
+                daily_sleep = sleep_data.get("dailySleepDTO") or {}
                 sleep_score = (
-                    daily_sleep.get("sleepScores", {}).get("overall", {}).get("value")
-                )
+                    (daily_sleep.get("sleepScores") or {}).get("overall") or {}
+                ).get("value")
                 sleep_time_seconds = daily_sleep.get("sleepTimeSeconds")
                 deep_sleep_seconds = daily_sleep.get("deepSleepSeconds")
                 light_sleep_seconds = daily_sleep.get("lightSleepSeconds")
@@ -1598,7 +1598,7 @@ class GarminClient:
                         int(activity_id), 100, 4000
                     )
                     if activity_details:
-                        polyline_data = activity_details.get("geoPolylineDTO", {})
+                        polyline_data = activity_details.get("geoPolylineDTO") or {}
                         raw_polyline = polyline_data.get("polyline", [])
                         last_activity["polyline"] = [
                             {"lat": p.get("lat"), "lon": p.get("lon")}
