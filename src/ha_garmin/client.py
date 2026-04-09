@@ -29,6 +29,7 @@ from .const import (
     GOALS_URL,
     HILL_SCORE_URL,
     HRV_URL,
+    HYDRATION_LOG_URL,
     HYDRATION_URL,
     LACTATE_THRESHOLD_URL,
     MENSTRUAL_CALENDAR_URL,
@@ -1205,6 +1206,38 @@ class GarminClient:
 
         _LOGGER.debug("Blood pressure payload: %s", payload)
         return await self._post_request(BLOOD_PRESSURE_SET_URL, payload)
+
+    async def set_hydration(
+        self,
+        value_in_ml: float,
+        cdate: str | None = None,
+        timestamp: str | None = None,
+    ) -> dict[str, Any]:
+        """Log hydration intake.
+
+        Args:
+            value_in_ml: Amount in millilitres (positive to add, negative to subtract, max 10000)
+            cdate: Calendar date YYYY-MM-DD (defaults to today)
+            timestamp: ISO timestamp (defaults to now)
+        """
+        from datetime import datetime
+
+        if abs(value_in_ml) > 10000:
+            raise ValueError("Hydration value cannot exceed 10000 mL")
+
+        if timestamp is None:
+            timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000")
+        if cdate is None:
+            cdate = date.today().isoformat()
+
+        payload = {
+            "calendarDate": cdate,
+            "timestampLocal": timestamp,
+            "valueInML": value_in_ml,
+        }
+
+        _LOGGER.debug("Hydration payload: %s", payload)
+        return await self._put_request(HYDRATION_LOG_URL, payload)
 
     async def add_body_composition(
         self,

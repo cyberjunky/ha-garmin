@@ -154,6 +154,20 @@ async def main():
     gear_data = await client.fetch_gear_data(timezone="Europe/Amsterdam")
     print_section("Gear Data", gear_data)
 
+    # === FETCH BLOOD PRESSURE DATA ===
+    print("\n" + "=" * 60)
+    print("  FETCHING BLOOD PRESSURE DATA")
+    print("=" * 60)
+    blood_pressure_data = await client.fetch_blood_pressure_data(today)
+    print_section("Blood Pressure Data", blood_pressure_data)
+
+    # === FETCH MENSTRUAL DATA ===
+    print("\n" + "=" * 60)
+    print("  FETCHING MENSTRUAL DATA")
+    print("=" * 60)
+    menstrual_data = await client.fetch_menstrual_data(today)
+    print_section("Menstrual Data", menstrual_data)
+
     # === SHOW NULL/NONE VALUES ===
     print("\n" + "=" * 60)
     print("  VALUES THAT ARE None (may need historical fetch)")
@@ -165,6 +179,8 @@ async def main():
         "training": training_data,
         "body": body_data,
         "gear": gear_data,
+        "blood_pressure": blood_pressure_data,
+        "menstrual": menstrual_data,
     }
 
     for section, data in all_data.items():
