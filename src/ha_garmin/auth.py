@@ -425,10 +425,24 @@ class GarminAuth:
         title_match = self._TITLE_RE.search(r.text)
         title = title_match.group(1) if title_match else ""
 
-        # Early credential detection — don't waste remaining strategies
+        # Detect server/infrastructure errors — fall through to next strategy
         title_lower = title.lower()
         if any(
-            hint in title_lower for hint in ("locked", "invalid", "error", "incorrect")
+            hint in title_lower
+            for hint in (
+                "bad gateway",
+                "service unavailable",
+                "cloudflare",
+                "502",
+                "503",
+            )
+        ):
+            raise GarminAPIError(f"Widget login: server error '{title}'")
+
+        # Early credential detection — don't waste remaining strategies
+        if any(
+            hint in title_lower
+            for hint in ("locked", "invalid", "incorrect", "account error")
         ):
             raise GarminAuthError(f"Widget authentication failed: '{title}'")
 
