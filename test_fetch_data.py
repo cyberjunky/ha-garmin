@@ -15,6 +15,7 @@ import os
 from datetime import date, datetime
 from pathlib import Path
 from pprint import pprint
+
 logging.basicConfig(level=logging.INFO)
 from ha_garmin import GarminAuth, GarminClient
 
@@ -150,7 +151,7 @@ async def main():
     print("\n" + "=" * 60)
     print("  FETCHING GEAR DATA")
     print("=" * 60)
-    gear_data = await client.fetch_gear_data()
+    gear_data = await client.fetch_gear_data(timezone="Europe/Amsterdam")
     print_section("Gear Data", gear_data)
 
     # === SHOW NULL/NONE VALUES ===
@@ -163,6 +164,7 @@ async def main():
         "activity": activity_data,
         "training": training_data,
         "body": body_data,
+        "gear": gear_data,
     }
 
     for section, data in all_data.items():
