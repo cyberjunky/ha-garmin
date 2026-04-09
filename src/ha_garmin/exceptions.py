@@ -18,6 +18,15 @@ class GarminMFARequired(GarminConnectError):
         self.mfa_ticket = mfa_ticket
 
 
+class GarminRateLimitError(GarminConnectError):
+    """HTTP 429 rate limit error.
+
+    Separate from GarminAuthError so callers can distinguish rate limits
+    (which are transient and worth retrying with a different strategy)
+    from genuine credential failures.
+    """
+
+
 class GarminAPIError(GarminConnectError):
     """API request error."""
 

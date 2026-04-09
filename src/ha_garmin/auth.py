@@ -1,12 +1,11 @@
 """Garmin Connect authentication using native DI Bearer tokens.
 
-Primary flow (iOS mobile app):
-1. POST sso.garmin.com/mobile/api/login  (iOS Safari UA, GCM_IOS_DARK client)
-2. POST diauth.garmin.com/di-oauth2-service/oauth/token  (service_ticket grant) → DI Bearer token
-
-Fallback flow (portal web):
-1. POST sso.garmin.com/portal/api/login  (desktop browser UA)
-2. POST diauth.garmin.com/di-oauth2-service/oauth/token  (service_ticket grant) → DI Bearer token
+Strategy chain (each strategy is tried in order; only auth errors stop the chain):
+1. Mobile iOS + curl_cffi  (TLS fingerprint rotation, no delay needed)
+2. Mobile iOS + requests   (plain HTTP fallback)
+3. SSO embed widget + cffi (HTML form flow, bypasses clientId rate limits)
+4. Portal web + curl_cffi  (TLS fingerprint rotation, 30-45s anti-WAF delay)
+5. Portal web + requests   (plain HTTP last resort)
 """
 
 from __future__ import annotations
@@ -15,7 +14,9 @@ import base64
 import contextlib
 import json
 import logging
+import random
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,12 @@ try:
 except ImportError:
     HAS_UA_GEN = False
 
-from .exceptions import GarminAPIError, GarminAuthError, GarminMFARequired
+from .exceptions import (
+    GarminAPIError,
+    GarminAuthError,
+    GarminMFARequired,
+    GarminRateLimitError,
+)
 from .models import AuthResult
 
 _LOGGER = logging.getLogger(__name__)
@@ -41,6 +47,14 @@ IOS_LOGIN_UA = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
 )
 
+# -- Android mobile app constants --
+ANDROID_SSO_CLIENT_ID = "GCM_ANDROID_DARK"
+ANDROID_SERVICE_URL = "https://mobile.integration.garmin.com/gcm/android"
+ANDROID_LOGIN_UA = (
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Mobile Safari/537.36"
+)
 
 # -- Portal (fallback) constants --
 PORTAL_SSO_CLIENT_ID = "GarminConnect"
@@ -59,6 +73,18 @@ DI_CLIENT_IDS = (
     "GARMIN_CONNECT_MOBILE_ANDROID_DI",
     "GARMIN_CONNECT_MOBILE_IOS_DI",
 )
+
+# -- Anti-WAF delay bounds (seconds) --
+# Cloudflare flags rapid GET→POST sequences as bot-like.
+LOGIN_DELAY_MIN_S = 10.0
+LOGIN_DELAY_MAX_S = 20.0
+# Widget flow uses a shorter delay (different rate-limit bucket).
+WIDGET_DELAY_MIN_S = 3.0
+WIDGET_DELAY_MAX_S = 8.0
+
+# -- TLS impersonation profiles --
+MOBILE_IMPERSONATIONS = ("safari_ios", "safari", "chrome120")
+PORTAL_IMPERSONATIONS = ("safari", "safari_ios", "chrome120", "edge101", "chrome")
 
 # -- API request headers (Android native, used for actual data calls) --
 NATIVE_API_USER_AGENT = "GCM-Android-5.23"
@@ -143,8 +169,6 @@ class GarminAuth:
 
     def _token_expires_soon(self) -> bool:
         """Check if the active token will expire within 15 minutes."""
-        import time as _time
-
         token = self.di_token
         if not token:
             return False
@@ -156,57 +180,109 @@ class GarminAuth:
                     base64.urlsafe_b64decode(payload_b64.encode()).decode()
                 )
                 exp = payload.get("exp")
-                if exp and _time.time() > (int(exp) - 900):
+                if exp and time.time() > (int(exp) - 900):
                     return True
         except Exception:
             _LOGGER.debug("Failed to check token expiry")
         return False
 
-    # -- LOGIN FLOW --
+    # ------------------------------------------------------------------ #
+    #  LOGIN — cascading strategy chain                                    #
+    # ------------------------------------------------------------------ #
 
     def login(self, email: str, password: str) -> AuthResult:
-        """Login via iOS mobile flow (primary) or portal web flow (fallback)."""
-        import requests as stdlib_requests
+        """Login using a cascading strategy chain.
 
-        try:
-            _LOGGER.debug("Trying iOS mobile login flow")
-            sess: Any = stdlib_requests.Session()
-            return self._mobile_login(sess, email, password)
-        except GarminAPIError as e:
-            if "429" in str(e):
-                _LOGGER.warning(
-                    "Mobile login returned 429. Attempting SSO widget fallback..."
-                )
-                try:
-                    sess = cffi_requests.Session(impersonate="chrome")
-                    return self._widget_web_login(sess, email, password)
-                except (GarminAuthError, GarminMFARequired):
-                    raise
-                except Exception as we:
-                    _LOGGER.warning("Widget login failed: %s", we)
-                    raise
-            _LOGGER.warning("iOS mobile login failed: %s — trying portal fallback", e)
-        except (GarminAuthError, GarminMFARequired):
-            raise
-        except Exception as e:
-            _LOGGER.warning("iOS mobile login failed: %s — trying portal fallback", e)
+        Tries each strategy in order.  Only GarminAuthError (bad credentials)
+        and GarminMFARequired stop the chain immediately — all other failures
+        (429 rate limits, transport errors, HTML challenges) fall through to
+        the next strategy.
+        """
+        strategies: list[tuple[str, Any]] = [
+            ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
+            ("mobile+requests", lambda: self._mobile_login_requests(email, password)),
+            ("widget+cffi", lambda: self._widget_web_login(email, password)),
+            ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
+            (
+                "portal+requests",
+                lambda: self._portal_web_login_requests(email, password),
+            ),
+        ]
 
-        _LOGGER.debug("Trying portal web login flow")
-        for imp in ("safari", "chrome120", "edge101", "chrome"):
+        last_err: Exception | None = None
+        rate_limited_count = 0
+
+        for name, run in strategies:
             try:
-                sess = cffi_requests.Session(impersonate=imp)  # type: ignore[arg-type]
-                return self._portal_web_login(sess, email, password)
+                _LOGGER.debug("Trying login strategy: %s", name)
+                return run()
             except (GarminAuthError, GarminMFARequired):
+                # Bad credentials or MFA needed — stop immediately.
                 raise
+            except GarminRateLimitError as e:
+                _LOGGER.warning("%s returned 429: %s", name, e)
+                rate_limited_count += 1
+                last_err = e
+                continue
             except Exception as e:
-                _LOGGER.warning("Portal login cffi(%s) failed: %s", imp, e)
+                _LOGGER.warning("%s failed: %s", name, e)
+                last_err = e
                 continue
 
-        raise GarminAPIError("All login strategies failed (iOS mobile + portal)")
+        if rate_limited_count == len(strategies):
+            raise GarminRateLimitError(
+                "All login strategies rate limited (429). "
+                "Try again later or check your IP/network."
+            )
+        raise GarminAPIError(f"All login strategies exhausted: {last_err}")
 
-    # -- iOS MOBILE LOGIN --
+    # ------------------------------------------------------------------ #
+    #  STRATEGY 1 — Mobile iOS + curl_cffi (TLS fingerprint rotation)     #
+    # ------------------------------------------------------------------ #
 
-    def _mobile_login(self, sess: Any, email: str, password: str) -> AuthResult:
+    def _mobile_login_cffi(self, email: str, password: str) -> AuthResult:
+        """Mobile login with curl_cffi TLS fingerprint rotation.
+
+        Different TLS fingerprints land in different Cloudflare rate-limit
+        buckets, so rotating through them gives us multiple shots.
+        """
+        last_err: Exception | None = None
+        for imp in MOBILE_IMPERSONATIONS:
+            try:
+                _LOGGER.debug("mobile+cffi trying impersonation=%s", imp)
+                sess = cffi_requests.Session(impersonate=imp)
+                return self._do_mobile_login(sess, email, password)
+            except (GarminAuthError, GarminMFARequired):
+                raise
+            except GarminRateLimitError as e:
+                _LOGGER.debug("mobile+cffi(%s) 429: %s", imp, e)
+                last_err = e
+                continue
+            except Exception as e:
+                _LOGGER.debug("mobile+cffi(%s) failed: %s", imp, e)
+                last_err = e
+                continue
+
+        if last_err:
+            raise last_err
+        raise GarminAPIError("mobile+cffi: no impersonations available")
+
+    # ------------------------------------------------------------------ #
+    #  STRATEGY 2 — Mobile iOS + plain requests                           #
+    # ------------------------------------------------------------------ #
+
+    def _mobile_login_requests(self, email: str, password: str) -> AuthResult:
+        """Mobile login with plain requests (no TLS fingerprinting)."""
+        import requests as stdlib_requests
+
+        sess = stdlib_requests.Session()
+        return self._do_mobile_login(sess, email, password)
+
+    # ------------------------------------------------------------------ #
+    #  Shared mobile login logic                                          #
+    # ------------------------------------------------------------------ #
+
+    def _do_mobile_login(self, sess: Any, email: str, password: str) -> AuthResult:
         """Login via sso.garmin.com/mobile/api/login (iOS app flow)."""
         login_url = f"{self._sso}/mobile/api/login"
         login_params = {
@@ -235,7 +311,7 @@ class GarminAuth:
         )
 
         if r.status_code == 429:
-            raise GarminAPIError(
+            raise GarminRateLimitError(
                 "Mobile login returned 429 — IP rate limited by Garmin"
             )
 
@@ -267,12 +343,23 @@ class GarminAuth:
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
 
+        # Check for 429 buried inside JSON error body
+        if res.get("error", {}).get("status-code") == "429":
+            raise GarminRateLimitError("Mobile login: 429 in JSON body")
+
         raise GarminAPIError(f"Mobile login failed: {res}")
 
-    # -- WIDGET WEB LOGIN (fallback) --
+    # ------------------------------------------------------------------ #
+    #  STRATEGY 3 — SSO Embed Widget + curl_cffi                         #
+    # ------------------------------------------------------------------ #
 
-    def _widget_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
-        """Login via the SSO embed HTML widget to bypass clientId rate limits."""
+    def _widget_web_login(self, email: str, password: str) -> AuthResult:
+        """Login via the SSO embed HTML widget.
+
+        Uses HTML form flow which bypasses clientId-based rate limits.
+        Uses curl_cffi for TLS fingerprinting.
+        """
+        sess = cffi_requests.Session(impersonate="chrome", timeout=30)
         sso_base = f"{self._sso}/sso"
         sso_embed = f"{sso_base}/embed"
         embed_params = {
@@ -289,18 +376,28 @@ class GarminAuth:
             "redirectAfterAccountCreationUrl": sso_embed,
         }
 
-        # Step 1: GET embed page
+        # Step 1: GET embed page to establish session cookies
         r = sess.get(sso_embed, params=embed_params)
+        if r.status_code == 429:
+            raise GarminRateLimitError("Widget embed GET returned 429")
         if not r.ok:
             raise GarminAPIError(f"Widget embed returned {r.status_code}")
 
-        # Step 2: GET signin page for CSRF
+        # Step 2: GET signin page for CSRF token
         r = sess.get(
             f"{sso_base}/signin", params=signin_params, headers={"Referer": sso_embed}
         )
+        if r.status_code == 429:
+            raise GarminRateLimitError("Widget signin GET returned 429")
+
         csrf_match = self._CSRF_RE.search(r.text)
         if not csrf_match:
             raise GarminAPIError("Widget login: missing CSRF token")
+
+        # Anti-WAF delay between GET and POST
+        delay_s = random.uniform(WIDGET_DELAY_MIN_S, WIDGET_DELAY_MAX_S)
+        _LOGGER.debug("Widget login: waiting %.0fs anti-WAF delay...", delay_s)
+        time.sleep(delay_s)
 
         # Step 3: POST credentials
         r = sess.post(
@@ -316,11 +413,20 @@ class GarminAuth:
             timeout=30,
         )
 
+        if r.status_code == 429:
+            raise GarminRateLimitError("Widget signin POST returned 429")
+
         title_match = self._TITLE_RE.search(r.text)
         title = title_match.group(1) if title_match else ""
 
+        # Early credential detection — don't waste remaining strategies
+        title_lower = title.lower()
+        if any(
+            hint in title_lower for hint in ("locked", "invalid", "error", "incorrect")
+        ):
+            raise GarminAuthError(f"Widget authentication failed: '{title}'")
+
         if "MFA" in title:
-            # Requires MFA
             self._mfa_session = sess
             self._mfa_login_params = signin_params
             self._mfa_post_headers = {"Referer": r.url}
@@ -329,7 +435,7 @@ class GarminAuth:
             raise GarminMFARequired("mfa_required")
 
         if title != "Success":
-            raise GarminAuthError(f"Widget authentication failed: {title}")
+            raise GarminAPIError(f"Widget login: unexpected title '{title}'")
 
         # Step 4: Extract service ticket
         ticket_match = re.search(r'embed\?ticket=([^"]+)"', r.text)
@@ -363,6 +469,9 @@ class GarminAuth:
             timeout=30,
         )
 
+        if r.status_code == 429:
+            raise GarminRateLimitError("Widget MFA verify returned 429")
+
         title_match = self._TITLE_RE.search(r.text)
         title = title_match.group(1) if title_match else ""
 
@@ -377,15 +486,59 @@ class GarminAuth:
             ticket_match.group(1), service_url=f"{self._sso}/sso/embed"
         )
 
-    # -- PORTAL WEB LOGIN (fallback) --
+    # ------------------------------------------------------------------ #
+    #  STRATEGY 4 — Portal web + curl_cffi (TLS fingerprint rotation)    #
+    # ------------------------------------------------------------------ #
 
-    def _portal_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
+    def _portal_web_login_cffi(self, email: str, password: str) -> AuthResult:
+        """Portal login with curl_cffi TLS fingerprint rotation.
+
+        Different TLS fingerprints land in different Cloudflare rate-limit
+        buckets, so rotating through them gives us multiple shots.
+        """
+        last_err: Exception | None = None
+        for imp in PORTAL_IMPERSONATIONS:
+            try:
+                _LOGGER.debug("portal+cffi trying impersonation=%s", imp)
+                sess = cffi_requests.Session(impersonate=imp)
+                return self._do_portal_web_login(sess, email, password)
+            except (GarminAuthError, GarminMFARequired):
+                raise
+            except GarminRateLimitError as e:
+                _LOGGER.debug("portal+cffi(%s) 429: %s", imp, e)
+                last_err = e
+                continue
+            except Exception as e:
+                _LOGGER.debug("portal+cffi(%s) failed: %s", imp, e)
+                last_err = e
+                continue
+
+        if last_err:
+            raise last_err
+        raise GarminAPIError("portal+cffi: no impersonations available")
+
+    # ------------------------------------------------------------------ #
+    #  STRATEGY 5 — Portal web + plain requests                          #
+    # ------------------------------------------------------------------ #
+
+    def _portal_web_login_requests(self, email: str, password: str) -> AuthResult:
+        """Portal login with plain requests (no TLS fingerprinting)."""
+        import requests as stdlib_requests
+
+        sess = stdlib_requests.Session()
+        return self._do_portal_web_login(sess, email, password)
+
+    # ------------------------------------------------------------------ #
+    #  Shared portal login logic                                          #
+    # ------------------------------------------------------------------ #
+
+    def _do_portal_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
         """Login via /portal/api/login — desktop browser flow."""
         signin_url = f"{self._sso}/portal/sso/en-US/sign-in"
         browser_hdrs = _random_browser_headers()
 
         # Step 1: GET the signin page to grab initial cookies
-        sess.get(
+        get_resp = sess.get(
             signin_url,
             params={
                 "clientId": PORTAL_SSO_CLIENT_ID,
@@ -399,12 +552,20 @@ class GarminAuth:
             timeout=30,
         )
 
-        import random
-        from time import sleep
+        if get_resp.status_code == 429:
+            raise GarminRateLimitError(
+                "Portal login GET returned 429 — Cloudflare blocking this request."
+            )
 
-        sleep(random.uniform(5, 15))
+        # Anti-WAF delay: 30-45s mimics real browser "read then type" behaviour.
+        delay_s = random.uniform(LOGIN_DELAY_MIN_S, LOGIN_DELAY_MAX_S)
+        _LOGGER.info(
+            "Portal login: waiting %.0fs to avoid Cloudflare rate limiting...",
+            delay_s,
+        )
+        time.sleep(delay_s)
 
-        # Step 2: Build the POST parameters and submit the login
+        # Step 2: POST credentials
         login_params = {
             "clientId": PORTAL_SSO_CLIENT_ID,
             "locale": "en-US",
@@ -436,8 +597,8 @@ class GarminAuth:
         )
 
         if r.status_code == 429:
-            raise GarminAPIError(
-                "Portal login returned 429 — Cloudflare blocking this request."
+            raise GarminRateLimitError(
+                "Portal login POST returned 429 — Cloudflare blocking this request."
             )
 
         try:
@@ -468,9 +629,15 @@ class GarminAuth:
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
 
+        # Check for 429 buried inside JSON error body
+        if res.get("error", {}).get("status-code") == "429":
+            raise GarminRateLimitError("Portal login: 429 in JSON body")
+
         raise GarminAPIError(f"Portal web login failed: {res}")
 
-    # -- MFA COMPLETION --
+    # ------------------------------------------------------------------ #
+    #  MFA COMPLETION — dual-endpoint fallback                            #
+    # ------------------------------------------------------------------ #
 
     def complete_mfa(self, mfa_code: str) -> AuthResult:
         """Complete MFA verification."""
@@ -480,7 +647,11 @@ class GarminAuth:
         return AuthResult(success=True)
 
     def _complete_mfa(self, mfa_code: str) -> None:
-        """Complete MFA — uses the endpoint matching the login flow that triggered it."""
+        """Complete MFA — uses the endpoint matching the login flow that triggered it.
+
+        For portal/ios flows, tries both /portal and /mobile MFA verify endpoints
+        as they may be on different rate-limit buckets.
+        """
         flow = getattr(self, "_mfa_flow", "portal")
         if flow == "widget":
             self._complete_mfa_widget(mfa_code)
@@ -496,44 +667,91 @@ class GarminAuth:
             "mfaSetup": False,
         }
 
-        if flow == "ios":
-            mfa_url = f"{self._sso}/mobile/api/mfa/verifyCode"
+        # Map flow name to SSO path segment ("ios" flow uses /mobile/ endpoint)
+        flow_path = "mobile" if flow == "ios" else flow
+
+        # Try both MFA endpoints — they share SSO session cookies but may be
+        # on different rate-limit buckets.
+        mfa_endpoints = [
+            (
+                f"{self._sso}/{flow_path}/api/mfa/verifyCode",
+                self._mfa_login_params,
+                self._mfa_post_headers,
+            ),
+        ]
+        # Add the other path as fallback
+        if flow_path == "mobile":
+            alt_endpoint = f"{self._sso}/portal/api/mfa/verifyCode"
+            alt_params = {
+                "clientId": PORTAL_SSO_CLIENT_ID,
+                "locale": "en-US",
+                "service": self._portal_service_url,
+            }
         else:
-            mfa_url = f"{self._sso}/portal/api/mfa/verifyCode"
+            alt_endpoint = f"{self._sso}/mobile/api/mfa/verifyCode"
+            alt_params = {
+                "clientId": IOS_SSO_CLIENT_ID,
+                "locale": "en-US",
+                "service": IOS_SERVICE_URL,
+            }
+        mfa_endpoints.append((alt_endpoint, alt_params, self._mfa_post_headers))
 
-        try:
-            r = sess.post(
-                mfa_url,
-                params=self._mfa_login_params,
-                headers=self._mfa_post_headers,
-                json=mfa_json,
-                timeout=30,
+        failures: list[str] = []
+        rate_limited_count = 0
+
+        for mfa_url, params, headers in mfa_endpoints:
+            try:
+                r = sess.post(
+                    mfa_url,
+                    params=params,
+                    headers=headers,
+                    json=mfa_json,
+                    timeout=30,
+                )
+            except Exception as e:
+                failures.append(f"{mfa_url}: connection error {e}")
+                continue
+
+            if r.status_code == 429:
+                failures.append(f"{mfa_url}: HTTP 429")
+                rate_limited_count += 1
+                continue
+
+            try:
+                res = r.json()
+            except Exception:
+                # Non-JSON response is almost always a Cloudflare HTML challenge
+                failures.append(f"{mfa_url}: HTTP {r.status_code} non-JSON")
+                continue
+
+            if res.get("error", {}).get("status-code") == "429":
+                failures.append(f"{mfa_url}: 429 in JSON body")
+                rate_limited_count += 1
+                continue
+
+            if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
+                ticket = res["serviceTicketId"]
+                svc_url = (
+                    IOS_SERVICE_URL
+                    if flow == "ios"
+                    else getattr(self, "_mfa_service_url", self._portal_service_url)
+                )
+                self._exchange_service_ticket(ticket, service_url=svc_url)
+                return
+
+            # Non-success JSON response — could be auth failure
+            failures.append(f"{mfa_url}: {res}")
+
+        # All endpoints failed
+        if rate_limited_count == len(mfa_endpoints):
+            raise GarminRateLimitError(
+                f"MFA verification rate limited on all endpoints: {failures}"
             )
-        except Exception as e:
-            raise GarminAuthError(f"MFA request failed: {e}") from e
+        raise GarminAuthError(f"MFA verification failed: {failures}")
 
-        if r.status_code == 429:
-            raise GarminAuthError("MFA verification rate limited")
-
-        try:
-            res = r.json()
-        except Exception as err:
-            raise GarminAuthError(
-                f"MFA non-JSON response: HTTP {r.status_code}"
-            ) from err
-
-        if res.get("error", {}).get("status-code") == "429":
-            raise GarminAuthError("MFA verification rate limited")
-
-        if res.get("responseStatus", {}).get("type") == "SUCCESSFUL":
-            ticket = res["serviceTicketId"]
-            svc_url = IOS_SERVICE_URL if flow == "ios" else self._mfa_service_url
-            self._exchange_service_ticket(ticket, service_url=svc_url)
-            return
-
-        raise GarminAuthError(f"MFA verification failed: {res}")
-
-    # -- PORTAL TICKET EXCHANGE (fallback) --
+    # ------------------------------------------------------------------ #
+    #  DI TOKEN EXCHANGE                                                  #
+    # ------------------------------------------------------------------ #
 
     def _exchange_service_ticket(
         self, ticket: str, service_url: str | None = None
@@ -565,7 +783,7 @@ class GarminAuth:
                 timeout=30,
             )
             if r.status_code == 429:
-                raise GarminAuthError("DI token exchange rate limited")
+                raise GarminRateLimitError("DI token exchange rate limited")
             if not r.ok:
                 _LOGGER.debug(
                     "DI exchange failed for %s: %s %s",
@@ -603,7 +821,9 @@ class GarminAuth:
         except Exception:
             return None
 
-    # -- TOKEN REFRESH --
+    # ------------------------------------------------------------------ #
+    #  TOKEN REFRESH                                                      #
+    # ------------------------------------------------------------------ #
 
     def _refresh_di_token(self) -> None:
         """Refresh the DI Bearer token using the stored refresh token."""
@@ -626,6 +846,8 @@ class GarminAuth:
             },
             timeout=30,
         )
+        if r.status_code == 429:
+            raise GarminRateLimitError(f"DI token refresh rate limited: {r.text[:200]}")
         if not r.ok:
             raise GarminAuthError(
                 f"DI token refresh failed: {r.status_code} {r.text[:200]}"
@@ -654,7 +876,9 @@ class GarminAuth:
             _LOGGER.debug("DI token refresh failed: %s", err)
         return False
 
-    # -- SESSION PERSISTENCE --
+    # ------------------------------------------------------------------ #
+    #  SESSION PERSISTENCE                                                #
+    # ------------------------------------------------------------------ #
 
     def save_session(self, path: str | Path) -> None:
         """Save all tokens to disk."""

@@ -41,7 +41,7 @@ from .const import (
     USER_SUMMARY_URL,
     WORKOUTS_URL,
 )
-from .exceptions import GarminAPIError, GarminAuthError
+from .exceptions import GarminAPIError, GarminAuthError, GarminRateLimitError
 from .models import UserProfile
 
 if TYPE_CHECKING:
@@ -462,9 +462,7 @@ class GarminClient:
                     return await self._request(
                         method, url, params, _retry_count=_retry_count + 1
                     )
-                raise GarminAPIError(
-                    f"Rate limited after {MAX_RETRIES} retries", response.status_code
-                )
+                raise GarminRateLimitError(f"Rate limited after {MAX_RETRIES} retries")
 
             elif 500 <= response.status_code < 600:
                 if _retry_count < MAX_RETRIES:
@@ -502,7 +500,7 @@ class GarminClient:
             _LOGGER.debug("API response from %s: %s", url, str(result)[:5000])
             return result
 
-        except (GarminAPIError, GarminAuthError):
+        except (GarminAPIError, GarminAuthError, GarminRateLimitError):
             raise
         except Exception as err:
             _LOGGER.debug("Request to %s failed: %s", url, err)

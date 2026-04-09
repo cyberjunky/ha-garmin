@@ -5,7 +5,7 @@ Python client for Garmin Connect API, designed for Home Assistant integration.
 ## Features
 
 - **Native Garmin Connect API** integration
-- **Robust authentication** with multiple login strategies and automatic fallback
+- **Robust authentication** with multiple login strategies and automatic fallbacks
 - **MFA support** with automatic endpoint fallback
 - **Token persistence** - save and restore sessions to avoid re-login
 - **Automatic token refresh** - proactively refreshes before expiry
