@@ -311,6 +311,9 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     training_status = result.get("trainingStatus") or {}
     if training_status:
         result["trainingStatusPhrase"] = training_status.get("trainingStatusPhrase")
+        vo2_generic = (training_status.get("mostRecentVO2Max") or {}).get("generic") or {}
+        result["vo2MaxValue"] = vo2_generic.get("vo2MaxValue")
+        result["vo2MaxPreciseValue"] = vo2_generic.get("vo2MaxPreciseValue")
 
     # === Scores: flatten nested structures ===
     endurance = result.get("enduranceScore") or {}
@@ -683,7 +686,14 @@ class GarminClient:
     async def get_body_composition(
         self, target_date: date | None = None
     ) -> dict[str, Any]:
-        """Get body composition data (weight, BMI, body fat)."""
+        """Get body composition data (weight, BMI, body fat).
+
+        The API returns a 30-day range and includes both a ``totalAverage``
+        (30-day average) and a ``dateWeightList`` (individual measurements).
+        We prefer the most recent individual measurement so values match what
+        the Garmin app displays, falling back to ``totalAverage`` only when no
+        individual measurements are available.
+        """
         if target_date is None:
             target_date = date.today()
 
@@ -691,7 +701,20 @@ class GarminClient:
         end = target_date.isoformat()
         url = f"{BODY_COMPOSITION_URL}/{start}/{end}"
         data = await self._request("GET", url)
-        return data.get("totalAverage", {}) if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+
+        date_weight_list = data.get("dateWeightList") or []
+        if date_weight_list:
+            latest = max(
+                (m for m in date_weight_list if m.get("weight") is not None),
+                key=lambda m: m.get("calendarDate", ""),
+                default=None,
+            )
+            if latest:
+                return latest
+
+        return data.get("totalAverage", {})
 
     async def get_activities_by_date(
         self, start_date: date, end_date: date
@@ -1551,8 +1574,8 @@ class GarminClient:
             yesterday_steps = yesterday_data.get("totalSteps")
             yesterday_distance = yesterday_data.get("totalDistance")
 
-            total_steps = sum(d.get("totalSteps", 0) for d in daily_steps)
-            total_distance = sum(d.get("totalDistance", 0) for d in daily_steps)
+            total_steps = sum(d.get("totalSteps") or 0 for d in daily_steps)
+            total_distance = sum(d.get("totalDistance") or 0 for d in daily_steps)
             days_count = len(daily_steps)
             if days_count > 0:
                 weekly_step_avg = round(total_steps / days_count)
@@ -1752,7 +1775,7 @@ class GarminClient:
 
         # Calculate points before trimming
         user_points = sum(
-            badge.get("badgePoints", 0) * badge.get("badgeEarnedNumber", 1)
+            (badge.get("badgePoints") or 0) * (badge.get("badgeEarnedNumber") or 1)
             for badge in raw_badges
         )
         level_points = {
