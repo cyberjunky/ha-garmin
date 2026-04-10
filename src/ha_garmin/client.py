@@ -1712,9 +1712,14 @@ class GarminClient:
         API calls: get_training_readiness, get_morning_training_readiness,
                    get_training_status, get_lactate_threshold, get_endurance_score,
                    get_hill_score, get_hrv_data (7 calls)
+
+        After midnight, today's training data may not be ready yet.  For fields
+        that go stale (training_status, HRV, scores) we fall back to yesterday.
         """
         if target_date is None:
             target_date = date.today()
+
+        yesterday_date = target_date - timedelta(days=1)
 
         training_readiness = await self._safe_call(
             self.get_training_readiness, target_date
@@ -1722,21 +1727,39 @@ class GarminClient:
         morning_training_readiness = await self._safe_call(
             self.get_morning_training_readiness, target_date
         )
-        training_status = await self._safe_call(self.get_training_status, target_date)
         lactate_threshold = await self._safe_call(self.get_lactate_threshold)
 
+        # Training status — fall back to yesterday if today's is empty
+        training_status = await self._safe_call(self.get_training_status, target_date)
+        if not training_status or not training_status.get("mostRecentVO2Max"):
+            yesterday_status = await self._safe_call(
+                self.get_training_status, yesterday_date
+            )
+            if yesterday_status and yesterday_status.get("mostRecentVO2Max"):
+                training_status = yesterday_status
+
+        # Endurance score — fall back to yesterday
         endurance_data = await self._safe_call(self.get_endurance_score, target_date)
+        if not endurance_data or "overallScore" not in endurance_data:
+            endurance_data = await self._safe_call(
+                self.get_endurance_score, yesterday_date
+            )
         endurance_score: dict[str, Any] = {"overallScore": None}
         if endurance_data and "overallScore" in endurance_data:
             endurance_score = endurance_data
 
+        # Hill score — fall back to yesterday
         hill_data = await self._safe_call(self.get_hill_score, target_date)
+        if not hill_data or "overallScore" not in hill_data:
+            hill_data = await self._safe_call(self.get_hill_score, yesterday_date)
         hill_score: dict[str, Any] = {"overallScore": None}
         if hill_data and "overallScore" in hill_data:
             hill_score = hill_data
 
-        # HRV
+        # HRV — fall back to yesterday
         hrv_data = await self._safe_call(self._get_hrv_data_raw, target_date)
+        if not hrv_data or "hrvSummary" not in hrv_data:
+            hrv_data = await self._safe_call(self._get_hrv_data_raw, yesterday_date)
         hrv_status: dict[str, Any] = {"status": "unknown"}
         if hrv_data and "hrvSummary" in hrv_data:
             hrv_status = hrv_data["hrvSummary"]
