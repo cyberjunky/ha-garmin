@@ -311,6 +311,9 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     training_status = result.get("trainingStatus") or {}
     if training_status:
         result["trainingStatusPhrase"] = training_status.get("trainingStatusPhrase")
+        vo2_generic = (training_status.get("mostRecentVO2Max") or {}).get("generic") or {}
+        result["vo2MaxValue"] = vo2_generic.get("vo2MaxValue")
+        result["vo2MaxPreciseValue"] = vo2_generic.get("vo2MaxPreciseValue")
 
     # === Scores: flatten nested structures ===
     endurance = result.get("enduranceScore") or {}
