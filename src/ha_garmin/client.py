@@ -311,11 +311,16 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     training_status = result.get("trainingStatus") or {}
     if training_status:
         result["trainingStatusPhrase"] = training_status.get("trainingStatusPhrase")
+        # Try nested mostRecentVO2Max.generic first, fall back to top-level
         vo2_generic = (training_status.get("mostRecentVO2Max") or {}).get(
             "generic"
         ) or {}
-        result["vo2MaxValue"] = vo2_generic.get("vo2MaxValue")
-        result["vo2MaxPreciseValue"] = vo2_generic.get("vo2MaxPreciseValue")
+        result["vo2MaxValue"] = vo2_generic.get("vo2MaxValue") or training_status.get(
+            "vo2MaxValue"
+        )
+        result["vo2MaxPreciseValue"] = vo2_generic.get(
+            "vo2MaxPreciseValue"
+        ) or training_status.get("vo2MaxPreciseValue")
 
     # === Scores: flatten nested structures ===
     endurance = result.get("enduranceScore") or {}
@@ -564,6 +569,14 @@ class GarminClient:
             "FRIDAY": 5,
             "SATURDAY": 6,
             "SUNDAY": 7,
+            # Abbreviated forms returned by some devices
+            "M": 1,
+            "Tu": 2,
+            "W": 3,
+            "Th": 4,
+            "F": 5,
+            "Sa": 6,
+            "Su": 7,
         }
 
         try:
