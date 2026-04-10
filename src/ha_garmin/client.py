@@ -1574,8 +1574,8 @@ class GarminClient:
             yesterday_steps = yesterday_data.get("totalSteps")
             yesterday_distance = yesterday_data.get("totalDistance")
 
-            total_steps = sum(d.get("totalSteps", 0) for d in daily_steps)
-            total_distance = sum(d.get("totalDistance", 0) for d in daily_steps)
+            total_steps = sum(d.get("totalSteps") or 0 for d in daily_steps)
+            total_distance = sum(d.get("totalDistance") or 0 for d in daily_steps)
             days_count = len(daily_steps)
             if days_count > 0:
                 weekly_step_avg = round(total_steps / days_count)
@@ -1775,7 +1775,7 @@ class GarminClient:
 
         # Calculate points before trimming
         user_points = sum(
-            badge.get("badgePoints", 0) * badge.get("badgeEarnedNumber", 1)
+            (badge.get("badgePoints") or 0) * (badge.get("badgeEarnedNumber") or 1)
             for badge in raw_badges
         )
         level_points = {
