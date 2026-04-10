@@ -683,7 +683,14 @@ class GarminClient:
     async def get_body_composition(
         self, target_date: date | None = None
     ) -> dict[str, Any]:
-        """Get body composition data (weight, BMI, body fat)."""
+        """Get body composition data (weight, BMI, body fat).
+
+        The API returns a 30-day range and includes both a ``totalAverage``
+        (30-day average) and a ``dateWeightList`` (individual measurements).
+        We prefer the most recent individual measurement so values match what
+        the Garmin app displays, falling back to ``totalAverage`` only when no
+        individual measurements are available.
+        """
         if target_date is None:
             target_date = date.today()
 
@@ -691,7 +698,20 @@ class GarminClient:
         end = target_date.isoformat()
         url = f"{BODY_COMPOSITION_URL}/{start}/{end}"
         data = await self._request("GET", url)
-        return data.get("totalAverage", {}) if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {}
+
+        date_weight_list = data.get("dateWeightList") or []
+        if date_weight_list:
+            latest = max(
+                (m for m in date_weight_list if m.get("weight") is not None),
+                key=lambda m: m.get("calendarDate", ""),
+                default=None,
+            )
+            if latest:
+                return latest
+
+        return data.get("totalAverage", {})
 
     async def get_activities_by_date(
         self, start_date: date, end_date: date
