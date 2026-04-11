@@ -44,6 +44,9 @@ FITNESS_AGE_URL = f"{GARMIN_CONNECT_API}/fitnessage-service/fitnessage"
 LACTATE_THRESHOLD_URL = (
     f"{GARMIN_CONNECT_API}/biometric-service/biometric/latestLactateThreshold"
 )
+POWER_TO_WEIGHT_URL = (
+    f"{GARMIN_CONNECT_API}/biometric-service/biometric/powerToWeight/latest"
+)
 
 # Device endpoints
 DEVICES_URL = f"{GARMIN_CONNECT_API}/device-service/deviceregistration/devices"

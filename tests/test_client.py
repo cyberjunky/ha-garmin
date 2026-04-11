@@ -181,3 +181,154 @@ class TestGarminClient:
             result = await client._request("GET", "https://connectapi.garmin.com/test")
 
         assert result == {}
+
+    async def test_get_body_composition_uses_daily_weight_summaries(self):
+        """Test get_body_composition returns latest weight from dailyWeightSummaries."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = {
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2026-04-01",
+                    "latestWeight": {
+                        "calendarDate": "2026-04-01",
+                        "weight": 85000.0,
+                        "bmi": 25.0,
+                    },
+                },
+                {
+                    "summaryDate": "2026-04-03",
+                    "latestWeight": {
+                        "calendarDate": "2026-04-03",
+                        "weight": 87000.0,
+                        "bmi": 26.0,
+                    },
+                },
+            ],
+            "totalAverage": {"weight": 86000.0, "bmi": 25.5},
+        }
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            result = await client.get_body_composition()
+
+        # Should pick the most recent by calendarDate
+        assert result["weight"] == 87000.0
+        assert result["bmi"] == 26.0
+
+    async def test_get_body_composition_falls_back_to_total_average(self):
+        """Test get_body_composition falls back to totalAverage when no summaries."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = {
+            "dailyWeightSummaries": [],
+            "totalAverage": {"weight": 86000.0, "bmi": 25.5},
+        }
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            result = await client.get_body_composition()
+
+        assert result["weight"] == 86000.0
+        assert result["bmi"] == 25.5
+
+    async def test_add_computed_fields_burned_kilocalories_computed(self):
+        """Test _add_computed_fields computes burnedKilocalories from bmr+active when null."""
+        from ha_garmin.client import _add_computed_fields
+
+        data = {
+            "burnedKilocalories": None,
+            "bmrKilocalories": 1400.0,
+            "activeKilocalories": 200.0,
+        }
+        result = _add_computed_fields(data)
+        assert result["burnedKilocalories"] == 1600.0
+
+    async def test_add_computed_fields_burned_kilocalories_not_overwritten(self):
+        """Test _add_computed_fields does not overwrite burnedKilocalories when present."""
+        from ha_garmin.client import _add_computed_fields
+
+        data = {
+            "burnedKilocalories": 1500.0,
+            "bmrKilocalories": 1400.0,
+            "activeKilocalories": 200.0,
+        }
+        result = _add_computed_fields(data)
+        assert result["burnedKilocalories"] == 1500.0
+
+    async def test_get_power_to_weight_returns_list(self):
+        """Test get_power_to_weight returns a list of sport entries."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = [
+            {
+                "sport": "RUNNING",
+                "functionalThresholdPower": 425,
+                "powerToWeight": 4.84,
+                "weight": 87.87,
+                "isStale": False,
+            },
+            {
+                "sport": "CYCLING",
+                "functionalThresholdPower": 242,
+                "powerToWeight": 2.75,
+                "weight": 87.87,
+                "isStale": False,
+            },
+        ]
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            result = await client.get_power_to_weight()
+
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["sport"] == "RUNNING"
+        assert result[0]["functionalThresholdPower"] == 425
+
+    async def test_fetch_training_data_includes_power_to_weight(self):
+        """Test fetch_training_data includes powerToWeight in result."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        ptw_payload = [
+            {"sport": "RUNNING", "functionalThresholdPower": 425, "powerToWeight": 4.84}
+        ]
+
+        async def mock_safe_call(func, *args, **kwargs):
+            if func == client.get_power_to_weight:
+                return ptw_payload
+            return {}
+
+        client._safe_call = mock_safe_call
+        data = await client.fetch_training_data()
+
+        assert "powerToWeight" in data
+        assert data["powerToWeight"] == ptw_payload
+
+    async def test_fetch_training_data_power_to_weight_yesterday_fallback(self):
+        """Test fetch_training_data falls back to yesterday for powerToWeight."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        ptw_yesterday = [
+            {"sport": "RUNNING", "functionalThresholdPower": 420, "powerToWeight": 4.78}
+        ]
+
+        call_count = {"n": 0}
+
+        async def mock_safe_call(func, *args, **kwargs):
+            if func == client.get_power_to_weight:
+                call_count["n"] += 1
+                if call_count["n"] == 1:
+                    return []  # today: empty
+                return ptw_yesterday  # yesterday: has data
+            return {}
+
+        client._safe_call = mock_safe_call
+        data = await client.fetch_training_data()
+
+        assert data["powerToWeight"] == ptw_yesterday

@@ -34,6 +34,7 @@ from .const import (
     LACTATE_THRESHOLD_URL,
     MENSTRUAL_CALENDAR_URL,
     MENSTRUAL_URL,
+    POWER_TO_WEIGHT_URL,
     SLEEP_URL,
     TRAINING_READINESS_URL,
     TRAINING_STATUS_URL,
@@ -861,6 +862,17 @@ class GarminClient:
         """Get lactate threshold data."""
         data = await self._request("GET", LACTATE_THRESHOLD_URL)
         return data if isinstance(data, dict) else {}
+
+    async def get_power_to_weight(
+        self, target_date: date | None = None
+    ) -> list[dict[str, Any]]:
+        """Get power-to-weight (FTP) data for a date."""
+        if target_date is None:
+            target_date = date.today()
+
+        url = f"{POWER_TO_WEIGHT_URL}/{target_date.isoformat()}"
+        data = await self._request("GET", url)
+        return data if isinstance(data, list) else []
 
     async def get_devices(self) -> list[dict[str, Any]]:
         """Get list of connected Garmin devices."""
@@ -1718,11 +1730,11 @@ class GarminClient:
     async def fetch_training_data(
         self, target_date: date | None = None
     ) -> dict[str, Any]:
-        """Fetch training data: readiness, status, lactate, scores, HRV.
+        """Fetch training data: readiness, status, lactate, scores, HRV, power-to-weight.
 
         API calls: get_training_readiness, get_morning_training_readiness,
                    get_training_status, get_lactate_threshold, get_endurance_score,
-                   get_hill_score, get_hrv_data (7 calls)
+                   get_hill_score, get_hrv_data, get_power_to_weight (8 calls)
 
         After midnight, today's training data may not be ready yet.  For fields
         that go stale (training_status, HRV, scores) we fall back to yesterday.
@@ -1775,6 +1787,13 @@ class GarminClient:
         if hrv_data and "hrvSummary" in hrv_data:
             hrv_status = hrv_data["hrvSummary"]
 
+        # Power to weight — fall back to yesterday
+        power_to_weight = await self._safe_call(self.get_power_to_weight, target_date)
+        if not power_to_weight:
+            power_to_weight = await self._safe_call(
+                self.get_power_to_weight, yesterday_date
+            )
+
         data = {
             "trainingReadiness": training_readiness or {},
             "morningTrainingReadiness": morning_training_readiness or {},
@@ -1783,6 +1802,7 @@ class GarminClient:
             "enduranceScore": endurance_score,
             "hillScore": hill_score,
             "hrvStatus": hrv_status,
+            "powerToWeight": power_to_weight or [],
         }
         return _add_computed_fields(data)
 
