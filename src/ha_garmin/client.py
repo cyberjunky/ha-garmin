@@ -345,6 +345,13 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     else:
         result["totalIntensityMinutes"] = None
 
+    # === Burned kilocalories: compute from bmr + active if null ===
+    if result.get("burnedKilocalories") is None:
+        bmr = result.get("bmrKilocalories")
+        active = result.get("activeKilocalories")
+        if bmr is not None and active is not None:
+            result["burnedKilocalories"] = bmr + active
+
     # === Body Battery: convert nested event datetime fields ===
     for event_key in [
         "bodyBatteryDynamicFeedbackEvent",
@@ -719,10 +726,14 @@ class GarminClient:
         if not isinstance(data, dict):
             return {}
 
-        date_weight_list = data.get("dateWeightList") or []
-        if date_weight_list:
+        summaries = data.get("dailyWeightSummaries") or []
+        if summaries:
             latest = max(
-                (m for m in date_weight_list if m.get("weight") is not None),
+                (
+                    s["latestWeight"]
+                    for s in summaries
+                    if (s.get("latestWeight") or {}).get("weight") is not None
+                ),
                 key=lambda m: m.get("calendarDate", ""),
                 default=None,
             )
