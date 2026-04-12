@@ -140,9 +140,14 @@ class TestGarminClient:
                 "sleepStartTimestampLocal": 1775944808000,
                 "sleepEndTimestampLocal": 1775973467000,
                 "sleepNeed": {"baseline": 470},
+                "nextSleepNeed": {
+                    "baseline": 470,
+                    "recommendedBedtimeStartMins": 1360,
+                    "recommendedBedtimeEndMins": 1380,
+                },
                 "sleepAlignment": {
-                    "optimalSleepWindowStartMins": -80,
-                    "optimalSleepWindowEndMins": 390,
+                    "optimalSleepWindowStartMins": 10,
+                    "optimalSleepWindowEndMins": 20,
                 },
                 "sleepScores": {"overall": {"value": 85}},
             }
@@ -159,7 +164,7 @@ class TestGarminClient:
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             mock_thread.side_effect = responses
-            data = await client.fetch_core_data()
+            data = await client.fetch_core_data(date(2026, 4, 12))
 
         assert data["sleepScore"] == 85
         assert "sleepTimeSeconds" not in data
@@ -178,10 +183,10 @@ class TestGarminClient:
         assert data["napTimeMinutes"] == 60
         assert data["unmeasurableSleepMinutes"] == 10
         assert data["sleepNeed"] == 470
-        assert data["bedtime"] == datetime(2026, 4, 11, 22, 0, 8, tzinfo=UTC)
-        assert data["optimalBedtime"] == datetime(2026, 4, 11, 22, 40, tzinfo=UTC)
-        assert data["wakeTime"] == datetime(2026, 4, 12, 5, 57, 47, tzinfo=UTC)
-        assert data["optimalWakeTime"] == datetime(2026, 4, 12, 6, 30, tzinfo=UTC)
+        assert data["bedtime"] == datetime(2026, 4, 12, 22, 0, 8, tzinfo=UTC)
+        assert data["optimalBedtime"] == datetime(2026, 4, 12, 22, 40, tzinfo=UTC)
+        assert data["wakeTime"] == datetime(2026, 4, 13, 5, 57, 47, tzinfo=UTC)
+        assert data["optimalWakeTime"] == datetime(2026, 4, 13, 6, 30, tzinfo=UTC)
 
     async def test_request_returns_empty_on_204(self):
         """Test _request returns empty dict on 204 No Content."""

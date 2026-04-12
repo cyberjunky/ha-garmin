@@ -254,6 +254,18 @@ def _local_timestamp_ms_to_datetime(
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
 
 
+def _project_time_of_day_to_date(
+    target_date: date | None, timestamp_ms: int | float | None
+) -> datetime | None:
+    """Project Garmin Local timestamp's wall-clock time onto target_date."""
+    if target_date is None or timestamp_ms is None:
+        return None
+    dt = _local_timestamp_ms_to_datetime(timestamp_ms)
+    if dt is None:
+        return None
+    return datetime.combine(target_date, dt.time(), tzinfo=UTC)
+
+
 def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Add pre-computed fields for common unit conversions and nested extractions.
 
@@ -1673,22 +1685,53 @@ class GarminClient:
                 awake_sleep_seconds = daily_sleep.get("awakeSleepSeconds")
                 nap_time_seconds = daily_sleep.get("napTimeSeconds")
                 unmeasurable_sleep_seconds = daily_sleep.get("unmeasurableSleepSeconds")
-                sleep_need = (daily_sleep.get("sleepNeed") or {}).get("baseline")
+                sleep_need_data = daily_sleep.get("sleepNeed") or {}
+                next_sleep_need_data = daily_sleep.get("nextSleepNeed") or {}
+                sleep_need = sleep_need_data.get("baseline")
                 sleep_calendar_date = daily_sleep.get("calendarDate") or target_date
-                bedtime = _local_timestamp_ms_to_datetime(
-                    daily_sleep.get("sleepStartTimestampLocal")
+                bedtime = _project_time_of_day_to_date(
+                    target_date, daily_sleep.get("sleepStartTimestampLocal")
                 )
-                wake_time = _local_timestamp_ms_to_datetime(
-                    daily_sleep.get("sleepEndTimestampLocal")
+                wake_time = _project_time_of_day_to_date(
+                    target_date, daily_sleep.get("sleepEndTimestampLocal")
                 )
-                optimal_bedtime = _minutes_on_date_to_datetime(
-                    sleep_calendar_date,
-                    sleep_alignment.get("optimalSleepWindowStartMins"),
+                if (
+                    bedtime is not None
+                    and wake_time is not None
+                    and wake_time <= bedtime
+                ):
+                    wake_time = wake_time + timedelta(days=1)
+
+                # Prefer nextSleepNeed bedtime recommendation for "tonight" values.
+                # recommendedBedtime* are minutes from midnight for bedtime, while
+                # optimal wake is derived from bedtime + sleep need baseline.
+                recommended_bedtime_start = next_sleep_need_data.get(
+                    "recommendedBedtimeStartMins"
                 )
-                optimal_wake_time = _minutes_on_date_to_datetime(
-                    sleep_calendar_date,
-                    sleep_alignment.get("optimalSleepWindowEndMins"),
-                )
+                next_sleep_need_baseline = next_sleep_need_data.get("baseline")
+                if recommended_bedtime_start is not None:
+                    optimal_bedtime = _minutes_on_date_to_datetime(
+                        target_date,
+                        recommended_bedtime_start,
+                    )
+                    baseline_for_wake = (
+                        next_sleep_need_baseline
+                        if next_sleep_need_baseline is not None
+                        else sleep_need
+                    )
+                    if optimal_bedtime is not None and baseline_for_wake is not None:
+                        optimal_wake_time = optimal_bedtime + timedelta(
+                            minutes=int(baseline_for_wake)
+                        )
+                else:
+                    optimal_bedtime = _minutes_on_date_to_datetime(
+                        sleep_calendar_date,
+                        sleep_alignment.get("optimalSleepWindowStartMins"),
+                    )
+                    optimal_wake_time = _minutes_on_date_to_datetime(
+                        sleep_calendar_date,
+                        sleep_alignment.get("optimalSleepWindowEndMins"),
+                    )
             except (KeyError, TypeError):
                 pass
 
