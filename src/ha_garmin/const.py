@@ -18,7 +18,7 @@ WORKOUTS_URL = f"{GARMIN_CONNECT_API}/workout-service/workouts"
 
 # Wellness endpoints
 HRV_URL = f"{GARMIN_CONNECT_API}/hrv-service/hrv"
-SLEEP_URL = f"{GARMIN_CONNECT_API}/wellness-service/wellness/dailySleepData"
+SLEEP_URL = f"{GARMIN_CONNECT_API}/sleep-service/sleep/dailySleepData"
 HYDRATION_URL = f"{GARMIN_CONNECT_API}/usersummary-service/usersummary/hydration/daily"
 HYDRATION_LOG_URL = (
     f"{GARMIN_CONNECT_API}/usersummary-service/usersummary/hydration/log"

@@ -233,6 +233,27 @@ def _grams_to_kg(grams: int | float | None) -> float | None:
     return round(grams / 1000, 2)
 
 
+def _minutes_on_date_to_datetime(
+    target_date: date | str | None, minutes: int | float | None
+) -> datetime | None:
+    """Convert minutes from midnight on a date to a UTC datetime, wrapping days."""
+    if target_date is None or minutes is None:
+        return None
+    if isinstance(target_date, str):
+        target_date = date.fromisoformat(target_date)
+    start_of_day = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC)
+    return start_of_day + timedelta(minutes=int(minutes))
+
+
+def _local_timestamp_ms_to_datetime(
+    timestamp_ms: int | float | None,
+) -> datetime | None:
+    """Convert Garmin Local timestamp milliseconds to a UTC datetime."""
+    if timestamp_ms is None:
+        return None
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
+
+
 def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Add pre-computed fields for common unit conversions and nested extractions.
 
@@ -259,6 +280,7 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
                 "Duration", "DurationMinutes"
             )
             result[minutes_key] = _seconds_to_minutes(result.get(key))
+            result.pop(key, None)
 
     # === Stress: seconds → minutes ===
     for key in [
@@ -274,18 +296,21 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
         if key in result:
             minutes_key = key.replace("Duration", "Minutes")
             result[minutes_key] = _seconds_to_minutes(result.get(key))
+            result.pop(key, None)
 
     # === Activity: seconds → minutes ===
     for key in ["activeSeconds", "highlyActiveSeconds", "sedentarySeconds"]:
         if key in result:
             minutes_key = key.replace("Seconds", "Minutes")
             result[minutes_key] = _seconds_to_minutes(result.get(key))
+            result.pop(key, None)
 
     # === Weight: grams → kg ===
     for key in ["weight", "boneMass", "muscleMass"]:
         if key in result:
             kg_key = f"{key}Kg"
             result[kg_key] = _grams_to_kg(result.get(key))
+            result.pop(key, None)
 
     # === HRV: flatten nested structure ===
     hrv = result.get("hrvStatus") or {}
@@ -968,8 +993,7 @@ class GarminClient:
         if target_date is None:
             target_date = date.today()
 
-        profile = await self.get_user_profile()
-        url = f"{SLEEP_URL}/{profile.display_name}"
+        url = SLEEP_URL
         params = {"date": target_date.isoformat(), "nonSleepBufferMinutes": 60}
         data = await self._request("GET", url, params=params)
         return data if isinstance(data, dict) else {}
@@ -1629,10 +1653,16 @@ class GarminClient:
         awake_sleep_seconds = None
         nap_time_seconds = None
         unmeasurable_sleep_seconds = None
+        sleep_need = None
+        bedtime = None
+        optimal_bedtime = None
+        wake_time = None
+        optimal_wake_time = None
 
         if sleep_data:
             try:
                 daily_sleep = sleep_data.get("dailySleepDTO") or {}
+                sleep_alignment = daily_sleep.get("sleepAlignment") or {}
                 sleep_score = (
                     (daily_sleep.get("sleepScores") or {}).get("overall") or {}
                 ).get("value")
@@ -1643,6 +1673,22 @@ class GarminClient:
                 awake_sleep_seconds = daily_sleep.get("awakeSleepSeconds")
                 nap_time_seconds = daily_sleep.get("napTimeSeconds")
                 unmeasurable_sleep_seconds = daily_sleep.get("unmeasurableSleepSeconds")
+                sleep_need = (daily_sleep.get("sleepNeed") or {}).get("baseline")
+                sleep_calendar_date = daily_sleep.get("calendarDate") or target_date
+                bedtime = _local_timestamp_ms_to_datetime(
+                    daily_sleep.get("sleepStartTimestampLocal")
+                )
+                wake_time = _local_timestamp_ms_to_datetime(
+                    daily_sleep.get("sleepEndTimestampLocal")
+                )
+                optimal_bedtime = _minutes_on_date_to_datetime(
+                    sleep_calendar_date,
+                    sleep_alignment.get("optimalSleepWindowStartMins"),
+                )
+                optimal_wake_time = _minutes_on_date_to_datetime(
+                    sleep_calendar_date,
+                    sleep_alignment.get("optimalSleepWindowEndMins"),
+                )
             except (KeyError, TypeError):
                 pass
 
@@ -1660,6 +1706,11 @@ class GarminClient:
             "awakeSleepSeconds": awake_sleep_seconds,
             "napTimeSeconds": nap_time_seconds,
             "unmeasurableSleepSeconds": unmeasurable_sleep_seconds,
+            "sleepNeed": sleep_need,
+            "bedtime": bedtime,
+            "optimalBedtime": optimal_bedtime,
+            "wakeTime": wake_time,
+            "optimalWakeTime": optimal_wake_time,
         }
         return _add_computed_fields(data)
 

@@ -1,6 +1,6 @@
 """Tests for GarminClient."""
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -137,6 +137,13 @@ class TestGarminClient:
                 "awakeSleepSeconds": 1800,
                 "napTimeSeconds": 3600,
                 "unmeasurableSleepSeconds": 600,
+                "sleepStartTimestampLocal": 1775944808000,
+                "sleepEndTimestampLocal": 1775973467000,
+                "sleepNeed": {"baseline": 470},
+                "sleepAlignment": {
+                    "optimalSleepWindowStartMins": -80,
+                    "optimalSleepWindowEndMins": 390,
+                },
                 "sleepScores": {"overall": {"value": 85}},
             }
         }
@@ -155,13 +162,13 @@ class TestGarminClient:
             data = await client.fetch_core_data()
 
         assert data["sleepScore"] == 85
-        assert data["sleepTimeSeconds"] == 28800
-        assert data["deepSleepSeconds"] == 7200
-        assert data["lightSleepSeconds"] == 14400
-        assert data["remSleepSeconds"] == 5400
-        assert data["awakeSleepSeconds"] == 1800
-        assert data["napTimeSeconds"] == 3600
-        assert data["unmeasurableSleepSeconds"] == 600
+        assert "sleepTimeSeconds" not in data
+        assert "deepSleepSeconds" not in data
+        assert "lightSleepSeconds" not in data
+        assert "remSleepSeconds" not in data
+        assert "awakeSleepSeconds" not in data
+        assert "napTimeSeconds" not in data
+        assert "unmeasurableSleepSeconds" not in data
 
         assert data["sleepTimeMinutes"] == 480
         assert data["deepSleepMinutes"] == 120
@@ -170,6 +177,11 @@ class TestGarminClient:
         assert data["awakeSleepMinutes"] == 30
         assert data["napTimeMinutes"] == 60
         assert data["unmeasurableSleepMinutes"] == 10
+        assert data["sleepNeed"] == 470
+        assert data["bedtime"] == datetime(2026, 4, 11, 22, 0, 8, tzinfo=UTC)
+        assert data["optimalBedtime"] == datetime(2026, 4, 11, 22, 40, tzinfo=UTC)
+        assert data["wakeTime"] == datetime(2026, 4, 12, 5, 57, 47, tzinfo=UTC)
+        assert data["optimalWakeTime"] == datetime(2026, 4, 12, 6, 30, tzinfo=UTC)
 
     async def test_request_returns_empty_on_204(self):
         """Test _request returns empty dict on 204 No Content."""
