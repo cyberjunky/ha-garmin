@@ -34,6 +34,8 @@ from .const import (
     LACTATE_THRESHOLD_URL,
     MENSTRUAL_CALENDAR_URL,
     MENSTRUAL_URL,
+    NUTRITION_LOGS_URL,
+    NUTRITION_QUICK_ADD_URL,
     POWER_TO_WEIGHT_URL,
     SLEEP_URL,
     TRAINING_READINESS_URL,
@@ -89,6 +91,28 @@ ACTIVITY_ESSENTIAL_KEYS = {
     # Polyline/GPS (for map display)
     "hasPolyline",
     "polyline",
+    # Training effect
+    "aerobicTrainingEffect",
+    "anaerobicTrainingEffect",
+    "trainingEffectLabel",
+    "activityTrainingLoad",
+    "aerobicTrainingEffectMessage",
+    "anaerobicTrainingEffectMessage",
+    # Intensity minutes
+    "moderateIntensityMinutes",
+    "vigorousIntensityMinutes",
+    # HR zones
+    "hrTimeInZone_1",
+    "hrTimeInZone_2",
+    "hrTimeInZone_3",
+    "hrTimeInZone_4",
+    "hrTimeInZone_5",
+    # Power zones
+    "powerTimeInZone_1",
+    "powerTimeInZone_2",
+    "powerTimeInZone_3",
+    "powerTimeInZone_4",
+    "powerTimeInZone_5",
 }
 
 # GMT datetime fields to rename and convert to UTC timezone
@@ -234,15 +258,17 @@ def _grams_to_kg(grams: int | float | None) -> float | None:
 
 
 def _minutes_on_date_to_datetime(
-    target_date: date | str | None, minutes: int | float | None
+    target_date: date | str | None,
+    minutes: int | float | None,
+    timezone_offset_minutes: int = 0,
 ) -> datetime | None:
-    """Convert minutes from midnight on a date to a UTC datetime, wrapping days."""
+    """Convert local minutes-from-midnight on a date to a UTC datetime."""
     if target_date is None or minutes is None:
         return None
     if isinstance(target_date, str):
         target_date = date.fromisoformat(target_date)
     start_of_day = datetime.combine(target_date, datetime.min.time(), tzinfo=UTC)
-    return start_of_day + timedelta(minutes=int(minutes))
+    return start_of_day + timedelta(minutes=int(minutes) - int(timezone_offset_minutes))
 
 
 def _local_timestamp_ms_to_datetime(
@@ -255,15 +281,56 @@ def _local_timestamp_ms_to_datetime(
 
 
 def _project_time_of_day_to_date(
-    target_date: date | None, timestamp_ms: int | float | None
+    target_date: date | None,
+    timestamp_ms: int | float | None,
+    timezone_offset_minutes: int = 0,
 ) -> datetime | None:
-    """Project Garmin Local timestamp's wall-clock time onto target_date."""
+    """Project Garmin Local timestamp wall-clock time onto target_date as UTC."""
     if target_date is None or timestamp_ms is None:
         return None
     dt = _local_timestamp_ms_to_datetime(timestamp_ms)
     if dt is None:
         return None
+    dt = dt - timedelta(minutes=int(timezone_offset_minutes))
     return datetime.combine(target_date, dt.time(), tzinfo=UTC)
+
+
+def _to_offset_minutes(value: int | float | None) -> int | None:
+    """Normalize Garmin timezone offset to minutes.
+
+    Garmin may return timezone offset as minutes or milliseconds.
+    """
+    if value is None:
+        return None
+    # Absolute values above one day in minutes are treated as milliseconds.
+    if abs(value) > 24 * 60:
+        return round(value / 60000)
+    return int(value)
+
+
+def _extract_sleep_timezone_offset_minutes(
+    daily_sleep: dict[str, Any], summary_raw: dict[str, Any]
+) -> int:
+    """Extract sleep timezone offset in minutes, defaulting to UTC."""
+    for key in [
+        "timezoneOffset",
+        "timeZoneOffset",
+        "timezoneOffsetInMilliseconds",
+        "timeZoneOffsetInMilliseconds",
+    ]:
+        value = _to_offset_minutes(daily_sleep.get(key))
+        if value is not None:
+            return value
+
+    event_list = summary_raw.get("bodyBatteryActivityEventList")
+    if isinstance(event_list, list):
+        for event in event_list:
+            if isinstance(event, dict):
+                value = _to_offset_minutes(event.get("timezoneOffset"))
+                if value is not None:
+                    return value
+
+    return 0
 
 
 def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
@@ -853,6 +920,13 @@ class GarminClient:
 
         url = f"{TRAINING_READINESS_URL}/{target_date.isoformat()}"
         data = await self._request("GET", url)
+        if isinstance(data, list):
+            # Prefer the non-morning entry; fall back to first
+            regular = next(
+                (e for e in data if e.get("inputContext") != "AFTER_WAKEUP_RESET"),
+                None,
+            )
+            data = regular or (data[0] if data else {})
         return data if isinstance(data, dict) else {}
 
     async def get_training_status(
@@ -898,6 +972,8 @@ class GarminClient:
     async def get_lactate_threshold(self) -> dict[str, Any]:
         """Get lactate threshold data."""
         data = await self._request("GET", LACTATE_THRESHOLD_URL)
+        if isinstance(data, list):
+            data = data[0] if data else {}
         return data if isinstance(data, dict) else {}
 
     async def get_power_to_weight(
@@ -1060,35 +1136,20 @@ class GarminClient:
         if target_date is None:
             target_date = date.today()
 
-        # Get regular training readiness data
-        data = await self.get_training_readiness(target_date)
+        url = f"{TRAINING_READINESS_URL}/{target_date.isoformat()}"
+        data = await self._request("GET", url)
 
-        if not data:
-            return {}
-
-        # If response is a list, search for morning reading
         if isinstance(data, list):
-            # First try to find entry with AFTER_WAKEUP_RESET context
             morning_entry = next(
-                (
-                    entry
-                    for entry in data
-                    if entry.get("inputContext") == "AFTER_WAKEUP_RESET"
-                ),
+                (e for e in data if e.get("inputContext") == "AFTER_WAKEUP_RESET"),
                 None,
             )
-
-            # If no explicit morning context, return first entry as fallback
-            # (typically the morning reading is first in the list)
-            if morning_entry is None and data:
+            if morning_entry is None:
                 _LOGGER.debug(
-                    "No AFTER_WAKEUP_RESET context found, using first entry as fallback"
+                    "No AFTER_WAKEUP_RESET context found in training readiness list"
                 )
-                return data[0] if data else {}
+            return morning_entry or {}
 
-            return morning_entry if morning_entry else {}
-
-        # If response is a single dict, return it directly
         return data if isinstance(data, dict) else {}
 
     # ========== Write/Service Methods ==========
@@ -1100,6 +1161,11 @@ class GarminClient:
     ) -> dict[str, Any]:
         """Make authenticated POST request."""
         import requests as stdlib_requests
+
+        if not self._auth.is_authenticated:
+            raise GarminAuthError("Not authenticated")
+        if self._auth._token_expires_soon():
+            await self._auth.refresh_session()
 
         headers = self._auth.get_api_headers()
         headers.update(DEFAULT_HEADERS)
@@ -1116,17 +1182,14 @@ class GarminClient:
         response = await asyncio.to_thread(_do_post, headers)
 
         if response.status_code == 401:
-            _LOGGER.debug("401 - attempting token refresh")
-            await self._auth.refresh_session()
+            _LOGGER.debug("401 on POST - attempting token refresh")
+            refreshed = await self._auth.refresh_session()
+            if not refreshed:
+                raise GarminAuthError("Session expired, re-login required")
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             headers["Content-Type"] = "application/json"
             response = await asyncio.to_thread(_do_post, headers)
-            if response.status_code != 200:
-                _LOGGER.error(
-                    "POST retry failed %s: %s", response.status_code, response.text
-                )
-                raise GarminAPIError(f"POST failed: {response.status_code}")
 
         if response.status_code not in (200, 201, 204):
             _LOGGER.error("POST failed %s: %s", response.status_code, response.text)
@@ -1147,6 +1210,11 @@ class GarminClient:
         """Make authenticated PUT request."""
         import requests as stdlib_requests
 
+        if not self._auth.is_authenticated:
+            raise GarminAuthError("Not authenticated")
+        if self._auth._token_expires_soon():
+            await self._auth.refresh_session()
+
         headers = self._auth.get_api_headers()
         headers.update(DEFAULT_HEADERS)
         if json_data is not None:
@@ -1163,20 +1231,20 @@ class GarminClient:
         response = await asyncio.to_thread(_do_put, headers)
 
         if response.status_code == 401:
-            await self._auth.refresh_session()
+            _LOGGER.debug("401 on PUT - attempting token refresh")
+            refreshed = await self._auth.refresh_session()
+            if not refreshed:
+                raise GarminAuthError("Session expired, re-login required")
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             if json_data is not None:
                 headers["Content-Type"] = "application/json"
             response = await asyncio.to_thread(_do_put, headers)
-            if response.status_code not in (200, 201, 204):
-                raise GarminAPIError(f"PUT failed: {response.status_code}")
-            if response.status_code == 204:
-                return {}
-            return response.json()
 
         if response.status_code not in (200, 201, 204):
-            raise GarminAPIError(f"PUT failed: {response.status_code}")
+            raise GarminAPIError(
+                f"PUT failed: {response.status_code} - {response.text}"
+            )
 
         if response.status_code == 204:
             return {}
@@ -1335,6 +1403,102 @@ class GarminClient:
 
         _LOGGER.debug("Hydration payload: %s", payload)
         return await self._put_request(HYDRATION_LOG_URL, payload)
+
+    async def _get_nutrition_meal(self, log_date: str) -> tuple[int | None, str | None]:
+        """Fetch the first available meal slot from the nutrition log.
+
+        Returns (mealId, mealStartTime) — both None if no meals are configured.
+        """
+        try:
+            data = await self._request("GET", f"{NUTRITION_LOGS_URL}/{log_date}")
+            if isinstance(data, dict):
+                for detail in data.get("mealDetails") or []:
+                    meal = detail.get("meal") or {}
+                    meal_id = meal.get("mealId")
+                    if meal_id is not None:
+                        return int(meal_id), meal.get("startTime")
+        except Exception:
+            pass
+        return None, None
+
+    async def add_nutrition_log(
+        self,
+        calories: float,
+        carbs: float | None = None,
+        protein: float | None = None,
+        fat: float | None = None,
+        name: str = "Quick Add",
+        meal_time: str | None = None,
+        timestamp: str | None = None,
+        meal_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Log nutrition via Garmin Quick Add (Connect+ feature).
+
+        Args:
+            calories: Calories to log
+            carbs: Carbohydrates in grams
+            protein: Protein in grams
+            fat: Fat in grams
+            name: Label for the log entry
+            meal_time: Meal time as HH:MM:SS (defaults to current time)
+            timestamp: ISO 8601 timestamp (defaults to now)
+            meal_id: Garmin meal slot ID. If not provided, fetched from today's
+                     log; falls back to null which lets Garmin assign it.
+        """
+        now = datetime.now(UTC)
+        log_date = now.strftime("%Y-%m-%d")
+
+        if timestamp is None:
+            log_timestamp = (
+                now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+            )
+        else:
+            dt = datetime.fromisoformat(timestamp)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            dt_utc = dt.astimezone(UTC)
+            log_date = dt_utc.strftime("%Y-%m-%d")
+            log_timestamp = (
+                dt_utc.strftime("%Y-%m-%dT%H:%M:%S.")
+                + f"{dt_utc.microsecond // 1000:03d}Z"
+            )
+
+        if meal_id is None:
+            meal_id, fetched_meal_time = await self._get_nutrition_meal(log_date)
+            if meal_id is not None:
+                _LOGGER.debug("Using mealId %s from nutrition log", meal_id)
+            else:
+                _LOGGER.debug(
+                    "No meal slot found — nutrition setup may be required in app"
+                )
+        else:
+            fetched_meal_time = None
+
+        if meal_time is None:
+            meal_time = fetched_meal_time or now.strftime("%H:%M:%S")
+
+        entry: dict[str, Any] = {
+            "name": name,
+            "logId": None,
+            "logTimestamp": log_timestamp,
+            "logSource": "GCW",
+            "logCategory": "QUICK_ADD",
+            "mealTime": meal_time,
+            "mealId": meal_id,
+            "action": "ADD",
+            "calories": str(int(calories)),
+            "carbs": str(int(carbs)) if carbs is not None else "",
+            "protein": str(int(protein)) if protein is not None else "",
+            "fat": str(int(fat)) if fat is not None else "",
+        }
+
+        payload = {
+            "mealDate": log_date,
+            "quickAddItems": [entry],
+        }
+
+        _LOGGER.debug("Nutrition quick-add payload: %s", payload)
+        return await self._put_request(NUTRITION_QUICK_ADD_URL, payload)
 
     async def add_body_composition(
         self,
@@ -1687,13 +1851,25 @@ class GarminClient:
                 unmeasurable_sleep_seconds = daily_sleep.get("unmeasurableSleepSeconds")
                 sleep_need_data = daily_sleep.get("sleepNeed") or {}
                 next_sleep_need_data = daily_sleep.get("nextSleepNeed") or {}
-                sleep_need = sleep_need_data.get("baseline")
+                next_sleep_need_baseline = next_sleep_need_data.get("baseline")
+                sleep_need = (
+                    next_sleep_need_baseline
+                    if next_sleep_need_baseline is not None
+                    else sleep_need_data.get("baseline")
+                )
                 sleep_calendar_date = daily_sleep.get("calendarDate") or target_date
+                sleep_tz_offset_minutes = _extract_sleep_timezone_offset_minutes(
+                    daily_sleep, summary_raw
+                )
                 bedtime = _project_time_of_day_to_date(
-                    target_date, daily_sleep.get("sleepStartTimestampLocal")
+                    target_date,
+                    daily_sleep.get("sleepStartTimestampLocal"),
+                    sleep_tz_offset_minutes,
                 )
                 wake_time = _project_time_of_day_to_date(
-                    target_date, daily_sleep.get("sleepEndTimestampLocal")
+                    target_date,
+                    daily_sleep.get("sleepEndTimestampLocal"),
+                    sleep_tz_offset_minutes,
                 )
                 if (
                     bedtime is not None
@@ -1708,29 +1884,26 @@ class GarminClient:
                 recommended_bedtime_start = next_sleep_need_data.get(
                     "recommendedBedtimeStartMins"
                 )
-                next_sleep_need_baseline = next_sleep_need_data.get("baseline")
                 if recommended_bedtime_start is not None:
                     optimal_bedtime = _minutes_on_date_to_datetime(
                         target_date,
                         recommended_bedtime_start,
+                        sleep_tz_offset_minutes,
                     )
-                    baseline_for_wake = (
-                        next_sleep_need_baseline
-                        if next_sleep_need_baseline is not None
-                        else sleep_need
-                    )
-                    if optimal_bedtime is not None and baseline_for_wake is not None:
+                    if optimal_bedtime is not None and sleep_need is not None:
                         optimal_wake_time = optimal_bedtime + timedelta(
-                            minutes=int(baseline_for_wake)
+                            minutes=int(sleep_need)
                         )
                 else:
                     optimal_bedtime = _minutes_on_date_to_datetime(
                         sleep_calendar_date,
                         sleep_alignment.get("optimalSleepWindowStartMins"),
+                        sleep_tz_offset_minutes,
                     )
                     optimal_wake_time = _minutes_on_date_to_datetime(
                         sleep_calendar_date,
                         sleep_alignment.get("optimalSleepWindowEndMins"),
+                        sleep_tz_offset_minutes,
                     )
             except (KeyError, TypeError):
                 pass

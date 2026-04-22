@@ -74,6 +74,11 @@ MENSTRUAL_CALENDAR_URL = (
     f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/calendar"
 )
 
+# Nutrition endpoints
+NUTRITION_QUICK_ADD_URL = f"{GARMIN_CONNECT_API}/nutrition-service/food/logs/quickAdd"
+NUTRITION_LOGS_URL = f"{GARMIN_CONNECT_API}/nutrition-service/food/logs"
+NUTRITION_MEALS_URL = f"{GARMIN_CONNECT_API}/nutrition-service/meal/meals"
+
 # Upload/Write endpoints
 UPLOAD_URL = f"{GARMIN_CONNECT_API}/upload-service/upload"
 ACTIVITY_CREATE_URL = f"{GARMIN_CONNECT_API}/activity-service/activity"

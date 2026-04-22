@@ -120,6 +120,9 @@ class TestGarminClient:
             "dailyStepGoal": 10000,
             "totalSteps": 5000,
             "totalDistanceMeters": 4000,
+            "bodyBatteryActivityEventList": [
+                {"eventType": "SLEEP", "timezoneOffset": 7200000}
+            ],
         }
         steps_payload = [
             {
@@ -183,10 +186,10 @@ class TestGarminClient:
         assert data["napTimeMinutes"] == 60
         assert data["unmeasurableSleepMinutes"] == 10
         assert data["sleepNeed"] == 470
-        assert data["bedtime"] == datetime(2026, 4, 12, 22, 0, 8, tzinfo=UTC)
-        assert data["optimalBedtime"] == datetime(2026, 4, 12, 22, 40, tzinfo=UTC)
-        assert data["wakeTime"] == datetime(2026, 4, 13, 5, 57, 47, tzinfo=UTC)
-        assert data["optimalWakeTime"] == datetime(2026, 4, 13, 6, 30, tzinfo=UTC)
+        assert data["bedtime"] == datetime(2026, 4, 12, 20, 0, 8, tzinfo=UTC)
+        assert data["optimalBedtime"] == datetime(2026, 4, 12, 20, 40, tzinfo=UTC)
+        assert data["wakeTime"] == datetime(2026, 4, 13, 3, 57, 47, tzinfo=UTC)
+        assert data["optimalWakeTime"] == datetime(2026, 4, 13, 4, 30, tzinfo=UTC)
 
     async def test_request_returns_empty_on_204(self):
         """Test _request returns empty dict on 204 No Content."""
@@ -349,3 +352,73 @@ class TestGarminClient:
         data = await client.fetch_training_data()
 
         assert data["powerToWeight"] == ptw_yesterday
+
+    async def test_add_nutrition_log_builds_correct_payload(self):
+        """Test add_nutrition_log sends PUT with mealDate+quickAddItems wrapper."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        put_payloads = []
+
+        async def fake_put(url, payload):
+            put_payloads.append((url, payload))
+            return {"mealDate": "2026-04-18"}
+
+        async def fake_get_meal(*_a, **_kw):
+            return (942305, "07:00:00")
+
+        client._put_request = fake_put
+        client._get_nutrition_meal = fake_get_meal
+
+        result = await client.add_nutrition_log(
+            calories=500,
+            carbs=60,
+            protein=30,
+            fat=15,
+            name="Lunch",
+            meal_time="12:00:00",
+            timestamp="2026-04-18T20:21:52.000",
+        )
+
+        assert result == {"mealDate": "2026-04-18"}
+        assert len(put_payloads) == 1
+        url, payload = put_payloads[0]
+        assert "nutrition-service/food/logs/quickAdd" in url
+        assert payload["mealDate"] == "2026-04-18"
+        assert "quickAddItems" in payload
+        entry = payload["quickAddItems"][0]
+        assert entry["logCategory"] == "QUICK_ADD"
+        assert entry["action"] == "ADD"
+        assert entry["logSource"] == "GCW"
+        assert entry["calories"] == "500"
+        assert entry["carbs"] == "60"
+        assert entry["protein"] == "30"
+        assert entry["fat"] == "15"
+        assert entry["name"] == "Lunch"
+        assert entry["mealTime"] == "12:00:00"
+        assert entry["logTimestamp"].endswith("Z")
+
+    async def test_add_nutrition_log_empty_macros_are_empty_string(self):
+        """Test add_nutrition_log sends empty string for omitted macros."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        put_payloads = []
+
+        async def fake_put(url, payload):
+            put_payloads.append((url, payload))
+            return {}
+
+        async def fake_get_meal(*_a, **_kw):
+            return (942305, "07:00:00")
+
+        client._put_request = fake_put
+        client._get_nutrition_meal = fake_get_meal
+
+        await client.add_nutrition_log(calories=200)
+
+        entry = put_payloads[0][1]["quickAddItems"][0]
+        assert entry["calories"] == "200"
+        assert entry["carbs"] == ""
+        assert entry["protein"] == ""
+        assert entry["fat"] == ""

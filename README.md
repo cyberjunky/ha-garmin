@@ -116,6 +116,37 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 | `fetch_blood_pressure_data()` | 1 | Blood pressure measurements |
 | `fetch_menstrual_data()` | 2 | Menstrual cycle data |
 
+## Write / Action Methods
+
+Methods for logging data back to Garmin Connect, suitable for Home Assistant services:
+
+| Method | Description |
+| ------ | ----------- |
+| `add_nutrition_log(calories, carbs, protein, fat, name)` | Log a Quick Add nutrition entry (requires Connect+) |
+| `set_hydration(value_in_ml)` | Log hydration intake |
+| `set_blood_pressure(systolic, diastolic, pulse)` | Log a blood pressure measurement |
+| `add_body_composition(weight, percent_fat, ...)` | Log weight / body composition via FIT upload |
+| `create_activity(name, type, start, duration_min)` | Create a manual activity |
+| `upload_activity(file_path)` | Upload a FIT / GPX / TCX file |
+| `set_active_gear(activity_type, setting, gear_uuid)` | Set default gear for an activity type |
+| `add_gear_to_activity(gear_uuid, activity_id)` | Associate gear with an activity |
+
+### Nutrition logging
+
+Requires a **Garmin Connect+** subscription and initial setup through the Garmin Connect app (the app creates the meal slots that the API needs).
+
+```python
+await client.add_nutrition_log(
+    calories=500,
+    carbs=60,       # optional, grams
+    protein=30,     # optional, grams
+    fat=15,         # optional, grams
+    name="Lunch",   # optional label
+)
+```
+
+The method automatically fetches the correct meal slot ID and time for the day. If no meal slots are configured yet, open the Garmin Connect app and set up your nutrition plan first.
+
 ## Individual API Methods
 
 | Method | Description |
