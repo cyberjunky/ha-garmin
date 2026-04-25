@@ -1475,7 +1475,10 @@ class GarminClient:
             fetched_meal_time = None
 
         if meal_time is None:
-            meal_time = fetched_meal_time or now.strftime("%H:%M:%S")
+            if timestamp is not None:
+                meal_time = dt_utc.strftime("%H:%M:%S")
+            else:
+                meal_time = fetched_meal_time or now.strftime("%H:%M:%S")
 
         entry: dict[str, Any] = {
             "name": name,
