@@ -416,12 +416,12 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     training_status = result.get("trainingStatus") or {}
     if training_status:
         result["trainingStatusPhrase"] = training_status.get("trainingStatusPhrase")
-        # Try nested mostRecentVO2Max.generic first, fall back to top-level
-        vo2_generic = (training_status.get("mostRecentVO2Max") or {}).get(
-            "generic"
-        ) or {}
-        result["vo2MaxValue"] = vo2_generic.get("vo2MaxValue") or training_status.get(
-            "vo2MaxValue"
+        most_recent_vo2 = training_status.get("mostRecentVO2Max")
+        vo2_generic = (most_recent_vo2.get("generic") or {} if isinstance(most_recent_vo2, dict) else {})
+        result["vo2MaxValue"] = (
+            vo2_generic.get("vo2MaxValue")
+            or (most_recent_vo2 if isinstance(most_recent_vo2, (int, float)) else None)
+            or training_status.get("vo2MaxValue")
         )
         result["vo2MaxPreciseValue"] = vo2_generic.get(
             "vo2MaxPreciseValue"
@@ -973,7 +973,11 @@ class GarminClient:
         """Get lactate threshold data."""
         data = await self._request("GET", LACTATE_THRESHOLD_URL)
         if isinstance(data, list):
-            data = data[0] if data else {}
+            merged: dict[str, Any] = {}
+            for item in data:
+                if isinstance(item, dict):
+                    merged.update({k: v for k, v in item.items() if v is not None})
+            return merged
         return data if isinstance(data, dict) else {}
 
     async def get_power_to_weight(
