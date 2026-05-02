@@ -63,7 +63,7 @@ DESKTOP_USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/131.0.0.0 Safari/537.36"
 )
-DI_TOKEN_URL = "https://diauth.garmin.com/di-oauth2-service/oauth/token"
+_DI_TOKEN_URL_TEMPLATE = "https://diauth.{domain}/di-oauth2-service/oauth/token"
 DI_GRANT_TYPE = (
     "https://connectapi.garmin.com/di-oauth2-service/oauth/grant/service_ticket"
 )
@@ -145,6 +145,7 @@ class GarminAuth:
         self._connect = f"https://connect.{domain}"
         self._connectapi = f"https://connectapi.{domain}"
         self._portal_service_url = f"https://connect.{domain}/app"
+        self._di_token_url = _DI_TOKEN_URL_TEMPLATE.format(domain=domain)
 
         # Native DI Bearer tokens
         self.di_token: str | None = None
@@ -776,7 +777,7 @@ class GarminAuth:
     def _exchange_service_ticket(
         self, ticket: str, service_url: str | None = None
     ) -> None:
-        """Exchange a CAS ticket for a DI Bearer token via diauth.garmin.com."""
+        """Exchange a CAS ticket for a DI Bearer token via diauth."""
         svc_url = service_url or self._portal_service_url
 
         di_token = None
@@ -785,7 +786,7 @@ class GarminAuth:
 
         for client_id in DI_CLIENT_IDS:
             r = _http_post(
-                DI_TOKEN_URL,
+                self._di_token_url,
                 headers=_native_headers(
                     {
                         "Authorization": _build_basic_auth(client_id),
@@ -850,7 +851,7 @@ class GarminAuth:
         if not self.di_refresh_token or not self.di_client_id:
             raise GarminAuthError("No DI refresh token available")
         r = _http_post(
-            DI_TOKEN_URL,
+            self._di_token_url,
             headers=_native_headers(
                 {
                     "Authorization": _build_basic_auth(self.di_client_id),

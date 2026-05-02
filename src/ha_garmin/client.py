@@ -1404,19 +1404,34 @@ class GarminClient:
         _LOGGER.debug("Hydration payload: %s", payload)
         return await self._put_request(HYDRATION_LOG_URL, payload)
 
-    async def _get_nutrition_meal(self, log_date: str) -> tuple[int | None, str | None]:
-        """Fetch the first available meal slot from the nutrition log.
+    async def _get_nutrition_meal(
+        self, log_date: str, meal_time: str | None = None
+    ) -> tuple[int | None, str | None]:
+        """Fetch the meal slot whose startTime best matches meal_time.
 
         Returns (mealId, mealStartTime) — both None if no meals are configured.
+        Picks the slot with the latest startTime that is <= meal_time so that
+        e.g. a 12:00 log goes to Lunch rather than always Breakfast.
         """
         try:
             data = await self._request("GET", f"{NUTRITION_LOGS_URL}/{log_date}")
             if isinstance(data, dict):
+                meals: list[tuple[int, str | None]] = []
                 for detail in data.get("mealDetails") or []:
                     meal = detail.get("meal") or {}
                     meal_id = meal.get("mealId")
                     if meal_id is not None:
-                        return int(meal_id), meal.get("startTime")
+                        meals.append((int(meal_id), meal.get("startTime")))
+                if not meals:
+                    return None, None
+                if meal_time is None or len(meals) == 1:
+                    return meals[0]
+                # Pick the meal whose startTime is the latest one <= meal_time.
+                best = meals[0]
+                for mid, start in meals:
+                    if start is not None and start <= meal_time:
+                        best = (mid, start)
+                return best
         except Exception:
             pass
         return None, None
@@ -1463,22 +1478,21 @@ class GarminClient:
                 + f"{dt_utc.microsecond // 1000:03d}Z"
             )
 
+        if meal_time is None:
+            meal_time = (
+                dt_utc.strftime("%H:%M:%S")
+                if timestamp is not None
+                else now.strftime("%H:%M:%S")
+            )
+
         if meal_id is None:
-            meal_id, fetched_meal_time = await self._get_nutrition_meal(log_date)
+            meal_id, _ = await self._get_nutrition_meal(log_date, meal_time)
             if meal_id is not None:
                 _LOGGER.debug("Using mealId %s from nutrition log", meal_id)
             else:
                 _LOGGER.debug(
                     "No meal slot found — nutrition setup may be required in app"
                 )
-        else:
-            fetched_meal_time = None
-
-        if meal_time is None:
-            if timestamp is not None:
-                meal_time = dt_utc.strftime("%H:%M:%S")
-            else:
-                meal_time = fetched_meal_time or now.strftime("%H:%M:%S")
 
         entry: dict[str, Any] = {
             "name": name,
