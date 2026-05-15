@@ -2091,9 +2091,9 @@ class GarminClient:
         def _has_vo2max(ts: dict[str, Any] | None) -> bool:
             return bool(
                 ts
-                and (ts.get("mostRecentVO2Max") or {})
-                .get("generic", {})
-                .get("vo2MaxValue")
+                and ((ts.get("mostRecentVO2Max") or {}).get("generic") or {}).get(
+                    "vo2MaxValue"
+                )
             )
 
         training_status = await self._safe_call(self.get_training_status, target_date)
