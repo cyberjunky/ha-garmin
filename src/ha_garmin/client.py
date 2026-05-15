@@ -334,6 +334,19 @@ def _extract_sleep_timezone_offset_minutes(
     return 0
 
 
+_TRAINING_STATUS_MAP: dict[int, str] = {
+    0: "No Status",
+    1: "Peaking (Legacy)",
+    2: "Maintaining",
+    3: "Recovering",
+    4: "Unproductive",
+    5: "Detraining",
+    6: "Peaking",
+    7: "Productive",
+    8: "Strained",
+}
+
+
 def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Add pre-computed fields for common unit conversions and nested extractions.
 
@@ -416,7 +429,23 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
 
     training_status = result.get("trainingStatus") or {}
     if training_status:
-        result["trainingStatusPhrase"] = training_status.get("trainingStatusPhrase")
+        latest_status_data = (
+            (training_status.get("mostRecentTrainingStatus") or {})
+            .get("latestTrainingStatusData") or {}
+        )
+        if latest_status_data:
+            most_recent = max(
+                latest_status_data.values(),
+                key=lambda x: x.get("calendarDate") or "",
+            )
+            status_code = most_recent.get("trainingStatus")
+            result["trainingStatusPhrase"] = (
+                _TRAINING_STATUS_MAP.get(status_code)
+                if isinstance(status_code, int)
+                else None
+            )
+        else:
+            result["trainingStatusPhrase"] = None
         most_recent_vo2 = training_status.get("mostRecentVO2Max")
         vo2_generic = (
             most_recent_vo2.get("generic") or {}
