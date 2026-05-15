@@ -142,9 +142,9 @@ class TestGarminClient:
                 "unmeasurableSleepSeconds": 600,
                 "sleepStartTimestampLocal": 1775944808000,
                 "sleepEndTimestampLocal": 1775973467000,
-                "sleepNeed": {"baseline": 470},
+                "sleepNeed": {"actual": 470},
                 "nextSleepNeed": {
-                    "baseline": 470,
+                    "actual": 470,
                     "recommendedBedtimeStartMins": 1360,
                     "recommendedBedtimeEndMins": 1380,
                 },

@@ -205,16 +205,37 @@ class GarminAuth:
         (429 rate limits, transport errors, HTML challenges) fall through to
         the next strategy.
         """
-        strategies: list[tuple[str, Any]] = [
-            ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
-            ("mobile+requests", lambda: self._mobile_login_requests(email, password)),
-            ("widget+cffi", lambda: self._widget_web_login(email, password)),
-            ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
-            (
-                "portal+requests",
-                lambda: self._portal_web_login_requests(email, password),
-            ),
-        ]
+        # CN SSO does not support the mobile API endpoint, so web-based
+        # strategies must run first.  For .com accounts the mobile strategies
+        # stay at the front because they bypass Cloudflare more reliably.
+        if self._is_cn:
+            strategies: list[tuple[str, Any]] = [
+                ("widget+cffi", lambda: self._widget_web_login(email, password)),
+                ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
+                (
+                    "portal+requests",
+                    lambda: self._portal_web_login_requests(email, password),
+                ),
+                ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
+                (
+                    "mobile+requests",
+                    lambda: self._mobile_login_requests(email, password),
+                ),
+            ]
+        else:
+            strategies = [
+                ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
+                (
+                    "mobile+requests",
+                    lambda: self._mobile_login_requests(email, password),
+                ),
+                ("widget+cffi", lambda: self._widget_web_login(email, password)),
+                ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
+                (
+                    "portal+requests",
+                    lambda: self._portal_web_login_requests(email, password),
+                ),
+            ]
 
         last_err: Exception | None = None
         rate_limited_count = 0
