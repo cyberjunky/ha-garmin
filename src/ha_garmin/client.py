@@ -430,9 +430,8 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     training_status = result.get("trainingStatus") or {}
     if training_status:
         latest_status_data = (
-            (training_status.get("mostRecentTrainingStatus") or {})
-            .get("latestTrainingStatusData") or {}
-        )
+            training_status.get("mostRecentTrainingStatus") or {}
+        ).get("latestTrainingStatusData") or {}
         if latest_status_data:
             most_recent = max(
                 latest_status_data.values(),
@@ -2088,13 +2087,21 @@ class GarminClient:
         )
         lactate_threshold = await self._safe_call(self.get_lactate_threshold)
 
-        # Training status — fall back to yesterday if today's is empty
+        # Training status — fall back to yesterday if today's is empty or has no VO2Max
+        def _has_vo2max(ts: dict[str, Any] | None) -> bool:
+            return bool(
+                ts
+                and (ts.get("mostRecentVO2Max") or {}).get("generic", {}).get(
+                    "vo2MaxValue"
+                )
+            )
+
         training_status = await self._safe_call(self.get_training_status, target_date)
-        if not training_status or not training_status.get("mostRecentVO2Max"):
+        if not _has_vo2max(training_status):
             yesterday_status = await self._safe_call(
                 self.get_training_status, yesterday_date
             )
-            if yesterday_status and yesterday_status.get("mostRecentVO2Max"):
+            if _has_vo2max(yesterday_status):
                 training_status = yesterday_status
 
         # Endurance score — fall back to yesterday
