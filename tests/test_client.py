@@ -186,9 +186,9 @@ class TestGarminClient:
         assert data["napTimeMinutes"] == 60
         assert data["unmeasurableSleepMinutes"] == 10
         assert data["sleepNeed"] == 470
-        assert data["bedtime"] == datetime(2026, 4, 12, 20, 0, 8, tzinfo=UTC)
+        assert data["bedtime"] == datetime(2026, 4, 11, 20, 0, 8, tzinfo=UTC)
         assert data["optimalBedtime"] == datetime(2026, 4, 12, 20, 40, tzinfo=UTC)
-        assert data["wakeTime"] == datetime(2026, 4, 13, 3, 57, 47, tzinfo=UTC)
+        assert data["wakeTime"] == datetime(2026, 4, 12, 3, 57, 47, tzinfo=UTC)
         assert data["optimalWakeTime"] == datetime(2026, 4, 13, 4, 30, tzinfo=UTC)
 
     async def test_request_returns_empty_on_204(self):

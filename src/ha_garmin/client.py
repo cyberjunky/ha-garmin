@@ -1943,7 +1943,7 @@ class GarminClient:
                     and wake_time is not None
                     and wake_time <= bedtime
                 ):
-                    wake_time = wake_time + timedelta(days=1)
+                    bedtime = bedtime - timedelta(days=1)
 
                 # Prefer nextSleepNeed bedtime recommendation for "tonight" values.
                 # recommendedBedtime* are minutes from midnight for bedtime, while
@@ -2206,10 +2206,15 @@ class GarminClient:
             if user_points >= points:
                 user_level = level
 
-        # Trim badges to only essential fields (reduces data from ~30 to 4 fields per badge)
+        # Trim badges to only essential fields (reduces data from ~30 to 9 fields per badge)
         badges = [
             {
                 "badgeName": b.get("badgeName"),
+                "badgeUuid": b.get("badgeUuid"),
+                "badgeKey": b.get("badgeKey"),
+                "badgeCategoryId": b.get("badgeCategoryId"),
+                "badgeDifficultyId": b.get("badgeDifficultyId"),
+                "badgeTypeIds": b.get("badgeTypeIds"),
                 "badgePoints": b.get("badgePoints"),
                 "badgeEarnedDate": b.get("badgeEarnedDate"),
                 "badgeEarnedNumber": b.get("badgeEarnedNumber"),

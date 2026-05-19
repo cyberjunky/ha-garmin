@@ -185,6 +185,7 @@ async def main():
         "activity": activity_data,
         "training": training_data,
         "body": body_data,
+        "goals": goals_data,
         "gear": gear_data,
         "blood_pressure": blood_pressure_data,
         "menstrual": menstrual_data,
