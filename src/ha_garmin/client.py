@@ -92,6 +92,8 @@ ACTIVITY_ESSENTIAL_KEYS = {
     # Polyline/GPS (for map display)
     "hasPolyline",
     "polyline",
+    # VO2Max (from activity record)
+    "vO2MaxValue",
     # Training effect
     "aerobicTrainingEffect",
     "anaerobicTrainingEffect",
@@ -2146,7 +2148,29 @@ class GarminClient:
             "hrvStatus": hrv_status,
             "powerToWeight": power_to_weight or [],
         }
-        return _add_computed_fields(data)
+        result = _add_computed_fields(data)
+
+        # Fall back to last activity's vO2MaxValue if training status has none.
+        # Some devices never populate mostRecentVO2Max in the training status API.
+        if not result.get("vo2MaxValue"):
+            activities = await self._safe_call(
+                self.get_activities_by_date,
+                target_date - timedelta(days=30),
+                target_date + timedelta(days=1),
+            )
+            if activities:
+                activity_vo2 = next(
+                    (
+                        a.get("vO2MaxValue")
+                        for a in activities
+                        if a.get("vO2MaxValue") is not None
+                    ),
+                    None,
+                )
+                if activity_vo2 is not None:
+                    result["vo2MaxValue"] = activity_vo2
+
+        return result
 
     async def fetch_body_data(self, target_date: date | None = None) -> dict[str, Any]:
         """Fetch body data: body composition, hydration, fitness age.
