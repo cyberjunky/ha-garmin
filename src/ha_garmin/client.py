@@ -531,9 +531,8 @@ class GarminClient:
 
     def _get_url(self, url: str) -> str:
         """Resolve URL to correct connectapi domain."""
-        base = GARMIN_CN_CONNECT_API if self._is_cn else GARMIN_CONNECT_API
         domain = "garmin.cn" if self._is_cn else "garmin.com"
-        return url.replace(base, f"https://connectapi.{domain}")
+        return url.replace(GARMIN_CONNECT_API, f"https://connectapi.{domain}")
 
     async def _request(
         self,
