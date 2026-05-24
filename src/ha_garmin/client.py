@@ -84,9 +84,15 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "steps",
     "elevationGain",
     "elevationLoss",
-    # Cadence
+    # Cadence (running uses steps/min fields; cycling uses averageCadence/maxCadence in RPM)
     "averageRunningCadenceInStepsPerMinute",
     "maxRunningCadenceInStepsPerMinute",
+    "averageCadence",
+    "maxCadence",
+    # Power
+    "avgPower",
+    "maxPower",
+    "normPower",
     # Type (simplified)
     "activityType",
     # Polyline/GPS (for map display)
@@ -116,6 +122,16 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "powerTimeInZone_3",
     "powerTimeInZone_4",
     "powerTimeInZone_5",
+    # Running dynamics (Garmin Running Dynamics Pod / compatible watches)
+    "avgStrideLength",
+    "avgVerticalRatio",
+    "avgGroundContactTime",
+    "avgVerticalOscillation",
+    # Strength training
+    "totalSets",
+    "activeSets",
+    "totalReps",
+    "totalVolume",
 }
 
 # GMT datetime fields to rename and convert to UTC timezone

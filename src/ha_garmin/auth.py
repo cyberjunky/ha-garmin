@@ -375,6 +375,11 @@ class GarminAuth:
         if res.get("error", {}).get("status-code") == "429":
             raise GarminRateLimitError("Mobile login: 429 in JSON body")
 
+        _LOGGER.warning(
+            "Mobile login: unrecognised response type: %r — full response: %s",
+            resp_type,
+            res,
+        )
         raise GarminAPIError(f"Mobile login failed: {res}")
 
     # ------------------------------------------------------------------ #
@@ -467,6 +472,17 @@ class GarminAuth:
             for hint in ("locked", "invalid", "incorrect", "account error")
         ):
             raise GarminAuthError(f"Widget authentication failed: '{title}'")
+
+        # "Unable To Sign In" means the account is restricted from web SSO
+        # (e.g. Garmin child/family accounts). Fall through to portal JSON API
+        # strategies which use a different path and may succeed.
+        if "unable to sign in" in title_lower or "unable to login" in title_lower:
+            _LOGGER.warning(
+                "Widget login: '%s' — account may be a Garmin child/family account "
+                "restricted from web SSO; falling through to portal strategies.",
+                title,
+            )
+            raise GarminAPIError(f"Widget login: account restricted '{title}'")
 
         if "MFA" in title:
             self._mfa_session = sess
@@ -675,6 +691,11 @@ class GarminAuth:
         if res.get("error", {}).get("status-code") == "429":
             raise GarminRateLimitError("Portal login: 429 in JSON body")
 
+        _LOGGER.warning(
+            "Portal login: unrecognised response type=%r — full response: %s",
+            resp_type,
+            res,
+        )
         raise GarminAPIError(f"Portal web login failed: {res}")
 
     # ------------------------------------------------------------------ #
