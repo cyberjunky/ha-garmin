@@ -68,9 +68,7 @@ class TestGarminAuth:
         """A transient error must not reject an otherwise-working token."""
         auth = GarminAuth()
         auth.di_token = "tok"
-        with patch(
-            "ha_garmin.auth.cffi_requests.get", side_effect=OSError("network")
-        ):
+        with patch("ha_garmin.auth.cffi_requests.get", side_effect=OSError("network")):
             assert auth._verify_token() is True
 
     async def test_verify_token_false_when_unauthenticated(self):
@@ -100,8 +98,12 @@ class TestGarminAuth:
             patch.object(auth, "_mobile_login_requests", side_effect=second_strategy),
             patch.object(auth, "_widget_web_login", side_effect=first_strategy),
             patch.object(auth, "_portal_web_login_cffi", side_effect=second_strategy),
-            patch.object(auth, "_portal_web_login_requests", side_effect=second_strategy),
-            patch.object(auth, "_verify_token", side_effect=lambda: next(verify_results)),
+            patch.object(
+                auth, "_portal_web_login_requests", side_effect=second_strategy
+            ),
+            patch.object(
+                auth, "_verify_token", side_effect=lambda: next(verify_results)
+            ),
         ):
             # CN order runs widget first → its token is rejected → fall through.
             auth._is_cn = True
