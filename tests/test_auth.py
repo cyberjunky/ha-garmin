@@ -3,6 +3,7 @@
 import os
 import stat
 import sys
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -41,6 +42,71 @@ class TestGarminAuth:
         """Test get_api_base_url returns connectapi.garmin.com."""
         auth = GarminAuth()
         assert "connectapi.garmin.com" in auth.get_api_base_url()
+
+    async def test_verify_token_true_on_200(self):
+        """A 200 from socialProfile means the token is accepted."""
+        auth = GarminAuth()
+        auth.di_token = "tok"
+        with patch(
+            "ha_garmin.auth.cffi_requests.get",
+            return_value=MagicMock(status_code=200),
+        ):
+            assert auth._verify_token() is True
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_verify_token_false_on_auth_rejection(self, status):
+        """A 401/403 means the API tier rejected the token."""
+        auth = GarminAuth()
+        auth.di_token = "tok"
+        with patch(
+            "ha_garmin.auth.cffi_requests.get",
+            return_value=MagicMock(status_code=status),
+        ):
+            assert auth._verify_token() is False
+
+    async def test_verify_token_inconclusive_keeps_token(self):
+        """A transient error must not reject an otherwise-working token."""
+        auth = GarminAuth()
+        auth.di_token = "tok"
+        with patch(
+            "ha_garmin.auth.cffi_requests.get", side_effect=OSError("network")
+        ):
+            assert auth._verify_token() is True
+
+    async def test_verify_token_false_when_unauthenticated(self):
+        """No token at all cannot be valid."""
+        auth = GarminAuth()
+        assert auth._verify_token() is False
+
+    async def test_login_falls_through_rejected_token(self):
+        """A strategy whose token the API rejects must not win the chain;
+        the next strategy that validates should.
+        """
+        from ha_garmin.models import AuthResult
+
+        auth = GarminAuth()
+
+        def first_strategy(_sess_or_email=None, _password=None):
+            auth.di_token = "poisoned"
+            return AuthResult(success=True)
+
+        def second_strategy(_email, _password):
+            auth.di_token = "good"
+            return AuthResult(success=True)
+
+        verify_results = iter([False, True])
+        with (
+            patch.object(auth, "_mobile_login_cffi", side_effect=second_strategy),
+            patch.object(auth, "_mobile_login_requests", side_effect=second_strategy),
+            patch.object(auth, "_widget_web_login", side_effect=first_strategy),
+            patch.object(auth, "_portal_web_login_cffi", side_effect=second_strategy),
+            patch.object(auth, "_portal_web_login_requests", side_effect=second_strategy),
+            patch.object(auth, "_verify_token", side_effect=lambda: next(verify_results)),
+        ):
+            # CN order runs widget first → its token is rejected → fall through.
+            auth._is_cn = True
+            auth.login("e@x.com", "pw")
+        assert auth.di_token == "good"
 
     async def test_refresh_session_not_authenticated(self):
         """Test refresh_session returns False when not authenticated."""

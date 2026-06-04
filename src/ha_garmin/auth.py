@@ -175,6 +175,41 @@ class GarminAuth:
         """Base URL for API requests."""
         return self._connectapi
 
+    def _clear_auth_state(self) -> None:
+        """Wipe in-memory tokens so the next strategy starts clean."""
+        self.di_token = None
+        self.di_refresh_token = None
+        self.di_client_id = None
+
+    def _verify_token(self) -> bool:
+        """Confirm the current token is accepted by the API tier.
+
+        A login strategy can obtain a DI token from the auth host (HTTP 200)
+        that the API tier (connectapi) then rejects with 401 "Token is not
+        active" — this is account/region dependent. We confirm the token works
+        with one lightweight authenticated call.
+
+        Returns True if accepted, or if the check is inconclusive. Only a
+        definitive auth rejection (401/403) returns False, so a transient
+        network error or 5xx never blocks an otherwise-working login.
+        """
+        if not self.is_authenticated:
+            return False
+        try:
+            r = cffi_requests.get(
+                f"{self._connectapi}/userprofile-service/socialProfile",
+                headers=self.get_api_headers(),
+                impersonate="chrome",
+                timeout=15,
+            )
+        except Exception as e:
+            _LOGGER.debug("Token validation inconclusive (kept): %s", e)
+            return True
+        if r.status_code in (401, 403):
+            _LOGGER.warning("Token rejected by API tier: HTTP %s", r.status_code)
+            return False
+        return True
+
     def _token_expires_soon(self) -> bool:
         """Check if the active token will expire within 15 minutes."""
         token = self.di_token
@@ -244,7 +279,19 @@ class GarminAuth:
         for name, run in strategies:
             try:
                 _LOGGER.debug("Trying login strategy: %s", name)
-                return run()
+                result = run()
+                # A strategy may get a token the API tier rejects (account/
+                # region specific). Verify before accepting; otherwise fall
+                # through to the next strategy.
+                if not self._verify_token():
+                    _LOGGER.warning(
+                        "%s obtained a token the API rejected; trying next strategy",
+                        name,
+                    )
+                    self._clear_auth_state()
+                    last_err = GarminAPIError(f"{name}: token rejected by API tier")
+                    continue
+                return result
             except (GarminAuthError, GarminMFARequired):
                 # Bad credentials or MFA needed — stop immediately.
                 raise
@@ -708,6 +755,12 @@ class GarminAuth:
         if not hasattr(self, "_mfa_session"):
             raise GarminAuthError("No pending MFA session")
         self._complete_mfa(mfa_code)
+        # The MFA session is tied to one strategy, so there's no fall-through
+        # here — but still fail loudly rather than store a token the API tier
+        # rejects (see _verify_token / issue context).
+        if not self._verify_token():
+            self._clear_auth_state()
+            raise GarminAuthError("Token rejected by API tier after MFA")
         return AuthResult(success=True)
 
     def _complete_mfa(self, mfa_code: str) -> None:
