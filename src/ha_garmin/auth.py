@@ -14,6 +14,7 @@ import base64
 import contextlib
 import json
 import logging
+import os
 import random
 import re
 import time
@@ -961,8 +962,25 @@ class GarminAuth:
         p = Path(path).expanduser()
         if p.is_dir() or not str(p).endswith(".json"):
             p = p / ".garmin_tokens.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, indent=2))
+        # The token file holds the DI refresh token (persistent account access),
+        # so write it owner-only (0o600) inside a 0o700 directory regardless of
+        # the process umask — a permissive umask must not leave it world-readable
+        # on a shared host.
+        p.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            p.parent.chmod(0o700)
+        # os.open with mode 0o600 (and O_NOFOLLOW where available, so a
+        # pre-planted symlink can't redirect the write) instead of write_text,
+        # which would create the file under the umask first.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(p, flags, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as token_file:
+            token_file.write(json.dumps(data, indent=2))
+        # Enforce 0o600 even if the file pre-existed with looser permissions.
+        with contextlib.suppress(OSError):
+            p.chmod(0o600)
 
     def load_session(self, path: str | Path) -> bool:
         """Load tokens from disk."""

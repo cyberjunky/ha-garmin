@@ -1,5 +1,9 @@
 """Tests for GarminAuth."""
 
+import os
+import stat
+import sys
+
 import pytest
 
 from ha_garmin import GarminAuth, GarminAuthError
@@ -76,3 +80,28 @@ class TestGarminAuth:
         auth = GarminAuth()
         result = auth.load_session(str(token_file))
         assert result is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+    async def test_save_session_owner_only_permissions(self, tmp_path):
+        """Token file/dir must be owner-only (0o600/0o700) under any umask.
+
+        Regression guard for the world-readable token store vulnerability —
+        the file holds the DI refresh token.
+        """
+        old_umask = os.umask(0o022)
+        try:
+            token_dir = tmp_path / "tokens"
+            auth = GarminAuth()
+            auth.di_token = "di_abc"
+            auth.di_refresh_token = "di_refresh"
+            auth.di_client_id = "CID"
+            auth.save_session(str(token_dir))
+
+            token_file = token_dir / ".garmin_tokens.json"
+            dir_mode = stat.S_IMODE(token_dir.stat().st_mode)
+            file_mode = stat.S_IMODE(token_file.stat().st_mode)
+            assert file_mode == 0o600, oct(file_mode)
+            assert dir_mode == 0o700, oct(dir_mode)
+            assert not (file_mode & (stat.S_IRWXG | stat.S_IRWXO))
+        finally:
+            os.umask(old_umask)
