@@ -1120,8 +1120,7 @@ class GarminClient:
             end_date = start_date + timedelta(days=92)
 
         url = MENSTRUAL_CALENDAR_URL.format(
-            start_date=start_date.isoformat(),
-            end_date=end_date.isoformat()
+            start_date=start_date.isoformat(), end_date=end_date.isoformat()
         )
 
         data = await self._request("GET", url)
