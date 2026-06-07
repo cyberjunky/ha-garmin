@@ -72,7 +72,7 @@ BLOOD_PRESSURE_URL = f"{GARMIN_CONNECT_API}/bloodpressure-service/bloodpressure/
 BLOOD_PRESSURE_SET_URL = f"{GARMIN_CONNECT_API}/bloodpressure-service/bloodpressure"
 MENSTRUAL_URL = f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/dayview"
 MENSTRUAL_CALENDAR_URL = (
-    f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/calendar"
+    f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/calendar/{{start_date}}/{{end_date}}"
 )
 
 # Nutrition endpoints
