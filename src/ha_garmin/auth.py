@@ -532,7 +532,7 @@ class GarminAuth:
             )
             raise GarminAPIError(f"Widget login: account restricted '{title}'")
 
-        if "MFA" in title:
+        if "mfa" in title_lower or "authentication application" in title_lower:
             self._mfa_session = sess
             self._mfa_login_params = signin_params
             self._mfa_post_headers = {"Referer": r.url}

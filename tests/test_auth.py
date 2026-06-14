@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ha_garmin import GarminAuth, GarminAuthError
+from ha_garmin.exceptions import GarminAPIError, GarminMFARequired
 
 
 class TestGarminAuth:
@@ -148,6 +149,61 @@ class TestGarminAuth:
         auth = GarminAuth()
         result = auth.load_session(str(token_file))
         assert result is False
+
+    # ------------------------------------------------------------------ #
+    #  Widget MFA title detection                                         #
+    # ------------------------------------------------------------------ #
+
+    def _widget_session(self, post_title: str) -> MagicMock:
+        """Mock cffi Session that drives _widget_web_login to the POST response."""
+        embed_resp = MagicMock(status_code=200, ok=True, text="<html></html>")
+        signin_resp = MagicMock(
+            status_code=200,
+            ok=True,
+            text='<input name="_csrf" value="tok">',
+            url="https://sso.garmin.com/sso/signin",
+        )
+        post_resp = MagicMock(
+            status_code=200,
+            text=f"<html><title>{post_title}</title></html>",
+        )
+        sess = MagicMock()
+        sess.get.side_effect = [embed_resp, signin_resp]
+        sess.post.return_value = post_resp
+        return sess
+
+    def test_widget_totp_mfa_title_raises_mfa_required(self):
+        """TOTP MFA title ('Enter MFA code for login') triggers GarminMFARequired."""
+        auth = GarminAuth()
+        sess = self._widget_session("Enter MFA code for login")
+        with (
+            patch("ha_garmin.auth.cffi_requests.Session", return_value=sess),
+            patch("time.sleep"),
+            pytest.raises(GarminMFARequired),
+        ):
+            auth._widget_web_login("u@x.com", "pw")
+
+    def test_widget_email_mfa_title_raises_mfa_required(self):
+        """Email MFA title ('GARMIN Authentication Application') triggers GarminMFARequired."""
+        auth = GarminAuth()
+        sess = self._widget_session("GARMIN Authentication Application")
+        with (
+            patch("ha_garmin.auth.cffi_requests.Session", return_value=sess),
+            patch("time.sleep"),
+            pytest.raises(GarminMFARequired),
+        ):
+            auth._widget_web_login("u@x.com", "pw")
+
+    def test_widget_unrelated_title_raises_api_error(self):
+        """An unrecognised title raises GarminAPIError, not GarminMFARequired."""
+        auth = GarminAuth()
+        sess = self._widget_session("Some Random Page")
+        with (
+            patch("ha_garmin.auth.cffi_requests.Session", return_value=sess),
+            patch("time.sleep"),
+            pytest.raises(GarminAPIError, match="unexpected title"),
+        ):
+            auth._widget_web_login("u@x.com", "pw")
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
     async def test_save_session_owner_only_permissions(self, tmp_path):
