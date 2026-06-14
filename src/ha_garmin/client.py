@@ -1113,11 +1113,17 @@ class GarminClient:
         if end_date is None:
             end_date = date.today() + timedelta(days=60)
 
-        params = {
-            "startDate": start_date.isoformat(),
-            "endDate": end_date.isoformat(),
-        }
-        data = await self._request("GET", MENSTRUAL_CALENDAR_URL, params=params)
+        if start_date > end_date:
+            raise ValueError("start_date cannot be after end_date")
+
+        if (end_date - start_date).days > 92:
+            end_date = start_date + timedelta(days=92)
+
+        url = MENSTRUAL_CALENDAR_URL.format(
+            start_date=start_date.isoformat(), end_date=end_date.isoformat()
+        )
+
+        data = await self._request("GET", url)
         return data if isinstance(data, dict) else {}
 
     async def _get_user_summary_raw(

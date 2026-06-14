@@ -422,3 +422,59 @@ class TestGarminClient:
         assert entry["carbs"] == ""
         assert entry["protein"] == ""
         assert entry["fat"] == ""
+
+    async def test_get_menstrual_calendar_backwards_dates(self):
+        """Test get_menstrual_calendar raises ValueError if start_date > end_date."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        start_date = date(2026, 6, 10)
+        end_date = date(2026, 6, 1)
+
+        with pytest.raises(ValueError, match="start_date cannot be after end_date"):
+            await client.get_menstrual_calendar(
+                start_date=start_date, end_date=end_date
+            )
+
+    async def test_get_menstrual_calendar_clamps_end_date(self):
+        """Test get_menstrual_calendar clamps end_date to a maximum of 92 days."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        start_date = date(2026, 1, 1)
+        end_date = date(2026, 12, 31)
+        expected_clamped_date = start_date + timedelta(days=92)
+
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_request:
+            mock_request.return_value = {"status": "ok"}
+            await client.get_menstrual_calendar(
+                start_date=start_date, end_date=end_date
+            )
+
+            mock_request.assert_called_once()
+            called_url = mock_request.call_args[0][1]
+
+            assert expected_clamped_date.isoformat() in called_url
+            assert end_date.isoformat() not in called_url
+
+    async def test_get_menstrual_calendar_url_formatting(self):
+        """Test get_menstrual_calendar formats the path URL correctly."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        start_date = date(2026, 5, 8)
+        end_date = date(2026, 8, 6)  # Exactly 90 days diff
+
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_request:
+            mock_request.return_value = {"status": "ok"}
+            await client.get_menstrual_calendar(
+                start_date=start_date, end_date=end_date
+            )
+
+            mock_request.assert_called_once()
+            called_url = mock_request.call_args[0][1]
+
+            expected_path_ending = (
+                f"/calendar/{start_date.isoformat()}/{end_date.isoformat()}"
+            )
+            assert called_url.endswith(expected_path_ending)

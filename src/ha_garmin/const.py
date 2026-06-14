@@ -71,9 +71,7 @@ GEAR_DEFAULTS_URL = f"{GARMIN_CONNECT_API}/gear-service/gear/user"
 BLOOD_PRESSURE_URL = f"{GARMIN_CONNECT_API}/bloodpressure-service/bloodpressure/range"
 BLOOD_PRESSURE_SET_URL = f"{GARMIN_CONNECT_API}/bloodpressure-service/bloodpressure"
 MENSTRUAL_URL = f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/dayview"
-MENSTRUAL_CALENDAR_URL = (
-    f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/calendar"
-)
+MENSTRUAL_CALENDAR_URL = f"{GARMIN_CONNECT_API}/periodichealth-service/menstrualcycle/calendar/{{start_date}}/{{end_date}}"
 
 # Nutrition endpoints
 NUTRITION_QUICK_ADD_URL = f"{GARMIN_CONNECT_API}/nutrition-service/food/logs/quickAdd"
