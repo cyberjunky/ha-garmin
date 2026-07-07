@@ -528,6 +528,63 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     return _convert_datetime_fields(result)
 
 
+def _transform_nutrition_log(log: dict[str, Any]) -> dict[str, Any]:
+    """Map a raw daily nutrition log to flat nutrition* keys."""
+    meals: list[dict[str, Any]] = []
+    entries_count = 0
+    last_logged: datetime | None = None
+
+    daily_content = log.get("dailyNutritionContent") or {}
+    daily_goals = log.get("dailyNutritionGoals") or {}
+
+    def _g(v: Any) -> float | None:
+        return round(float(v), 1) if v is not None else None
+
+    for detail in log.get("mealDetails") or []:
+        meal = detail.get("meal") or {}
+        entries = detail.get("loggedFoods") or []
+        meal_content = detail.get("mealNutritionContent") or {}
+        entries_count += len(entries)
+        for entry in entries:
+            ts = entry.get("logTimestamp")
+            if ts:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if last_logged is None or dt > last_logged:
+                    last_logged = dt
+        meals.append(
+            {
+                "meal": meal.get("mealName"),
+                "calories": meal_content.get("calories"),
+                "protein": _g(meal_content.get("protein")),
+                "fat": _g(meal_content.get("fat")),
+                "carbs": _g(meal_content.get("carbs")),
+                "entries": len(entries),
+            }
+        )
+
+    consumed = daily_content.get("calories")
+    goal = daily_goals.get("calories")
+
+    return {
+        "nutritionConsumedCalories": int(consumed) if consumed is not None else None,
+        "nutritionConsumedProtein": _g(daily_content.get("protein")),
+        "nutritionConsumedFat": _g(daily_content.get("fat")),
+        "nutritionConsumedCarbs": _g(daily_content.get("carbs")),
+        "nutritionCalorieGoal": int(goal) if goal is not None else None,
+        "nutritionProteinGoal": _g(daily_goals.get("protein")),
+        "nutritionFatGoal": _g(daily_goals.get("fat")),
+        "nutritionCarbsGoal": _g(daily_goals.get("carbs")),
+        "nutritionRemainingCalories": (
+            int(goal) - int(consumed)
+            if goal is not None and consumed is not None
+            else None
+        ),
+        "nutritionLoggedEntries": entries_count,
+        "nutritionLastLoggedTime": last_logged,
+        "nutritionMeals": meals,
+    }
+
+
 class GarminClient:
     """Garmin Connect API client."""
 
@@ -698,6 +755,7 @@ class GarminClient:
     # - fetch_gear_data() for gear stats, alarms
     # - fetch_blood_pressure_data() for blood pressure
     # - fetch_menstrual_data() for menstrual cycle data
+    # - fetch_nutrition_data() for nutrition log (Connect+)
 
     def _calculate_next_active_alarms(
         self, alarms: list[dict[str, Any]] | None, timezone: str | None
@@ -1124,6 +1182,20 @@ class GarminClient:
         )
 
         data = await self._request("GET", url)
+        return data if isinstance(data, dict) else {}
+
+    async def get_nutrition_log(
+        self, target_date: date | None = None
+    ) -> dict[str, Any]:
+        """Fetch the daily nutrition log (Connect+ feature).
+
+        Returns {} when the account has no nutrition setup (endpoint 404s).
+        """
+        if target_date is None:
+            target_date = date.today()
+        data = await self._request(
+            "GET", f"{NUTRITION_LOGS_URL}/{target_date.isoformat()}"
+        )
         return data if isinstance(data, dict) else {}
 
     async def _get_user_summary_raw(
@@ -2429,3 +2501,21 @@ class GarminClient:
             "menstrualData": menstrual_data,
             "menstrualCalendar": menstrual_calendar,
         }
+
+    async def fetch_nutrition_data(
+        self, target_date: date | None = None
+    ) -> dict[str, Any]:
+        """Fetch nutrition data: consumed macros, goals, per-meal breakdown.
+
+        API calls: get_nutrition_log (1 call)
+
+        Returns {} when the account has no Connect+ nutrition setup.
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        log = await self._safe_call(self.get_nutrition_log, target_date)
+        if not log:
+            return {}
+
+        return _transform_nutrition_log(log)

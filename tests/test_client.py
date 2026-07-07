@@ -423,6 +423,183 @@ class TestGarminClient:
         assert entry["protein"] == ""
         assert entry["fat"] == ""
 
+    async def test_get_nutrition_log_returns_dict(self):
+        """Test get_nutrition_log returns dict from API response."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = {
+            "dailyNutritionContent": {"calories": 500},
+            "mealDetails": [],
+        }
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            result = await client.get_nutrition_log()
+
+        assert result == payload
+
+    async def test_get_nutrition_log_404_returns_empty(self):
+        """Test get_nutrition_log returns {} on 404 (no Connect+)."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response({}, status=404)
+            result = await client.get_nutrition_log()
+
+        assert result == {}
+
+    async def test_fetch_nutrition_data_full_day(self):
+        """Test fetch_nutrition_data transforms a real Connect+ nutrition log."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        log_payload = {
+            "mealDate": "2026-07-06",
+            "dailyNutritionGoals": {
+                "calories": 1650,
+                "carbs": 165.0,
+                "fat": 55.0,
+                "protein": 124.0,
+            },
+            "dailyNutritionContent": {
+                "calories": 902,
+                "carbs": 91.0,
+                "fat": 53.0,
+                "protein": 15.0,
+            },
+            "mealDetails": [
+                {
+                    "meal": {"mealName": "BREAKFAST"},
+                    "mealNutritionContent": {
+                        "calories": 2,
+                        "carbs": 0.0,
+                        "protein": 0.0,
+                        "fat": 0.0,
+                    },
+                    "loggedFoods": [
+                        {"logTimestamp": "2026-07-06T06:00:00.000Z"},
+                    ],
+                },
+                {
+                    "meal": {"mealName": "LUNCH"},
+                    "mealNutritionContent": {
+                        "calories": 650,
+                        "carbs": 54.0,
+                        "protein": 11.0,
+                        "fat": 43.0,
+                    },
+                    "loggedFoods": [
+                        {"logTimestamp": "2026-07-06T10:56:43.000Z"},
+                    ],
+                },
+                {
+                    "meal": {"mealName": "DINNER"},
+                    "mealNutritionContent": {
+                        "calories": 250,
+                        "carbs": 37.0,
+                        "protein": 4.0,
+                        "fat": 10.0,
+                    },
+                    "loggedFoods": [
+                        {"logTimestamp": "2026-07-06T17:42:31.000Z"},
+                    ],
+                },
+                {
+                    "meal": {"mealName": "SNACKS"},
+                    "loggedFoods": [],
+                },
+            ],
+        }
+
+        with patch.object(
+            client, "get_nutrition_log", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = log_payload
+            data = await client.fetch_nutrition_data()
+
+        assert data["nutritionConsumedCalories"] == 902
+        assert data["nutritionConsumedProtein"] == 15.0
+        assert data["nutritionConsumedFat"] == 53.0
+        assert data["nutritionConsumedCarbs"] == 91.0
+        assert data["nutritionCalorieGoal"] == 1650
+        assert data["nutritionProteinGoal"] == 124.0
+        assert data["nutritionFatGoal"] == 55.0
+        assert data["nutritionCarbsGoal"] == 165.0
+        assert data["nutritionRemainingCalories"] == 748
+        assert data["nutritionLoggedEntries"] == 3
+        assert data["nutritionLastLoggedTime"] == datetime(
+            2026, 7, 6, 17, 42, 31, tzinfo=UTC
+        )
+        assert len(data["nutritionMeals"]) == 4
+        assert data["nutritionMeals"][0] == {
+            "meal": "BREAKFAST",
+            "calories": 2,
+            "protein": 0.0,
+            "fat": 0.0,
+            "carbs": 0.0,
+            "entries": 1,
+        }
+        assert data["nutritionMeals"][1]["entries"] == 1
+        assert data["nutritionMeals"][3]["entries"] == 0
+
+    async def test_fetch_nutrition_data_empty_day(self):
+        """Test fetch_nutrition_data returns zeros for an empty day."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        log_payload = {
+            "dailyNutritionGoals": {
+                "calories": 2400,
+                "protein": 140.0,
+                "fat": 80.0,
+                "carbs": 270.0,
+            },
+            "dailyNutritionContent": {
+                "calories": 0,
+                "protein": 0.0,
+                "fat": 0.0,
+                "carbs": 0.0,
+            },
+            "mealDetails": [
+                {
+                    "meal": {"mealName": "BREAKFAST"},
+                    "mealNutritionContent": {
+                        "calories": 0,
+                        "protein": 0.0,
+                        "fat": 0.0,
+                        "carbs": 0.0,
+                    },
+                    "loggedFoods": [],
+                },
+            ],
+        }
+
+        with patch.object(
+            client, "get_nutrition_log", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = log_payload
+            data = await client.fetch_nutrition_data()
+
+        assert data["nutritionConsumedCalories"] == 0
+        assert data["nutritionConsumedProtein"] == 0.0
+        assert data["nutritionLoggedEntries"] == 0
+        assert data["nutritionLastLoggedTime"] is None
+
+    async def test_fetch_nutrition_data_unavailable(self):
+        """Test fetch_nutrition_data returns {} when nutrition is unavailable."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        with patch.object(
+            client, "get_nutrition_log", new_callable=AsyncMock
+        ) as mock_get:
+            mock_get.return_value = {}
+            data = await client.fetch_nutrition_data()
+
+        assert data == {}
+
     async def test_get_menstrual_calendar_backwards_dates(self):
         """Test get_menstrual_calendar raises ValueError if start_date > end_date."""
         auth = _make_auth()

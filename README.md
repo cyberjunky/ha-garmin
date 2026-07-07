@@ -115,6 +115,7 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 | `fetch_gear_data()` | 4+ | Gear items, stats, device alarms |
 | `fetch_blood_pressure_data()` | 1 | Blood pressure measurements |
 | `fetch_menstrual_data()` | 2 | Menstrual cycle data |
+| `fetch_nutrition_data()` | 1 | Nutrition log: consumed macros, goals, per-meal breakdown |
 
 ## Write / Action Methods
 
@@ -179,6 +180,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_blood_pressure()` | Blood pressure data |
 | `get_menstrual_data()` | Menstrual cycle data |
 | `get_menstrual_calendar()` | Menstrual calendar |
+| `get_nutrition_log()` | Daily nutrition log (Connect+) |
 
 ## Data Transformations
 
