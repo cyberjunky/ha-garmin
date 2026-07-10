@@ -52,6 +52,8 @@ POWER_TO_WEIGHT_URL = (
 # Device endpoints
 DEVICES_URL = f"{GARMIN_CONNECT_API}/device-service/deviceregistration/devices"
 DEVICE_ALARMS_URL = f"{GARMIN_CONNECT_API}/device-service/devices/alarms"
+DEVICE_SOLAR_URL = f"{GARMIN_CONNECT_API}/web-gateway/solar"
+DEVICE_LAST_USED_URL = f"{GARMIN_CONNECT_API}/device-service/deviceservice/mylastused"
 
 # Respiration and SPO2 endpoints
 RESPIRATION_URL = f"{GARMIN_CONNECT_API}/wellness-service/wellness/daily/respiration"

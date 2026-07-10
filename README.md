@@ -58,7 +58,7 @@ async def fetch_all():
     activity_data = await client.fetch_activity_data(today)  # Activities, workouts
     training_data = await client.fetch_training_data(today)  # HRV, training status
     goals_data    = await client.fetch_goals_data()          # Goals, badges
-    gear_data     = await client.fetch_gear_data()           # Gear, device alarms
+    gear_data     = await client.fetch_gear_data()           # Gear, alarms, solar, devices
 
 
 asyncio.run(fetch_all())
@@ -112,7 +112,7 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 | `fetch_activity_data()` | 4+ | Activities, workouts, HR zones, polylines |
 | `fetch_training_data()` | 7 | Training readiness, status, HRV, lactate, endurance/hill scores |
 | `fetch_goals_data()` | 4 | Goals (active/future/history), badges, user level |
-| `fetch_gear_data()` | 4+ | Gear items, stats, device alarms |
+| `fetch_gear_data()` | 6+ | Gear items, stats, device alarms, solar intensity, devices, last sync |
 | `fetch_blood_pressure_data()` | 1 | Blood pressure measurements |
 | `fetch_menstrual_data()` | 2 | Menstrual cycle data |
 
@@ -175,6 +175,8 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_gear_defaults()` | Default gear settings |
 | `get_devices()` | Connected devices |
 | `get_device_alarms()` | Device alarms |
+| `get_device_solar_data()` | Solar intensity data per device |
+| `get_device_last_used()` | Last used device and last sync time |
 | `get_device_settings()` | Device settings |
 | `get_blood_pressure()` | Blood pressure data |
 | `get_menstrual_data()` | Menstrual cycle data |

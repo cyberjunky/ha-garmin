@@ -83,6 +83,41 @@ class TestGarminClient:
         assert activities[0]["activityName"] == "Morning Run"
         assert activities[0]["distance"] == 5000.0
 
+    def test_trim_activity_keeps_ebike_fields(self):
+        """Test _trim_activity preserves e-bike fields and drops unknown keys."""
+        from ha_garmin.client import _trim_activity
+
+        activity = {
+            "activityId": 2,
+            "activityType": {"typeKey": "e_bike_fitness"},
+            "eBikeBatteryRemaining": 42,
+            "eBikeBatteryUsage": 19,
+            "eBikeMaxAssistModes": 7,
+            "eBikeAssistModeInfoDTOList": None,
+            "someUnknownField": "dropped",
+        }
+
+        trimmed = _trim_activity(activity)
+
+        assert trimmed["eBikeBatteryRemaining"] == 42
+        assert trimmed["eBikeBatteryUsage"] == 19
+        assert trimmed["eBikeMaxAssistModes"] == 7
+        assert trimmed["activityType"] == "e_bike_fitness"
+        assert "eBikeAssistModeInfoDTOList" not in trimmed
+        assert "someUnknownField" not in trimmed
+
+    def test_trim_activity_no_ebike_fields_absent(self):
+        """Test _trim_activity does not inject e-bike keys for non-e-bike activities."""
+        from ha_garmin.client import _trim_activity
+
+        trimmed = _trim_activity(
+            {"activityId": 3, "activityType": {"typeKey": "running"}}
+        )
+
+        assert "eBikeBatteryRemaining" not in trimmed
+        assert "eBikeBatteryUsage" not in trimmed
+        assert "eBikeMaxAssistModes" not in trimmed
+
     async def test_get_devices(self):
         """Test get_devices returns list."""
         auth = _make_auth()
@@ -105,6 +140,101 @@ class TestGarminClient:
         assert len(devices) == 1
         assert devices[0]["displayName"] == "Forerunner 955"
         assert devices[0]["batteryLevel"] == 85
+
+    async def test_get_device_solar_data(self):
+        """Test get_device_solar_data unwraps deviceSolarInput."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = {
+            "deviceSolarInput": {
+                "deviceId": 123,
+                "solarDailyDataDTOs": [
+                    {
+                        "solarInputReadings": [
+                            {
+                                "readingTimestampGmt": "2026-07-09T10:00:00.0",
+                                "solarUtilization": 42.5,
+                                "activityTimeGainMs": 60000,
+                            }
+                        ]
+                    }
+                ],
+            }
+        }
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            solar = await client.get_device_solar_data(123)
+
+        readings = solar["solarDailyDataDTOs"][0]["solarInputReadings"]
+        assert readings[0]["solarUtilization"] == 42.5
+
+    async def test_get_device_solar_data_not_solar(self):
+        """Test get_device_solar_data returns empty dict for non-solar devices."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response({})
+            solar = await client.get_device_solar_data(123)
+
+        assert solar == {}
+
+    async def test_get_device_last_used(self):
+        """Test get_device_last_used converts upload time to UTC datetime."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = {
+            "userDeviceId": 3627212773,
+            "lastUsedDeviceApplicationKey": "venu4",
+            "lastUsedDeviceName": "Venu 4 - 45mm",
+            "lastUsedDeviceUploadTime": 1783686462000,
+            "imageUrl": "https://example.com/venu4.png",
+        }
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            last_used = await client.get_device_last_used()
+
+        assert last_used["lastUsedDeviceName"] == "Venu 4 - 45mm"
+        assert "lastUsedDeviceUploadTime" not in last_used
+        sync_time = last_used["lastSyncTime"]
+        assert sync_time == datetime.fromtimestamp(1783686462, tz=UTC)
+        assert sync_time.tzinfo is not None
+
+    def test_trim_device_keeps_essentials(self):
+        """Test _trim_device keeps identity fields and drops capability flags."""
+        from ha_garmin.client import _trim_device
+
+        device = {
+            "deviceId": 3627212773,
+            "unitId": 3627212773,
+            "displayName": "Venu 4 - 45mm",
+            "productDisplayName": "Venu 4 - 45mm",
+            "applicationKey": "venu4",
+            "serialNumber": "8PM119893",
+            "partNumber": "006-B4643-00",
+            "productSku": "010-03014-00",
+            "imageUrl": "https://example.com/venu4.png",
+            "primary": True,
+            "primaryActivityTrackerIndicator": True,
+            "deviceCategories": ["FITNESS", "WELLNESS"],
+            "wifi": True,
+            "runningWorkoutCapable": True,
+            "minGCMAndroidVersion": 10149,
+            "bestInClassVideoLink": None,
+        }
+
+        trimmed = _trim_device(device)
+
+        assert trimmed["deviceId"] == 3627212773
+        assert trimmed["serialNumber"] == "8PM119893"
+        assert trimmed["deviceCategories"] == ["FITNESS", "WELLNESS"]
+        assert "runningWorkoutCapable" not in trimmed
+        assert "minGCMAndroidVersion" not in trimmed
+        assert "bestInClassVideoLink" not in trimmed
 
     async def test_fetch_core_data_sleep_fields(self):
         """Test fetch_core_data returns all sleep fields including nap and unmeasurable."""

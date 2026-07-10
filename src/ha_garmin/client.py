@@ -17,6 +17,8 @@ from .const import (
     BODY_COMPOSITION_URL,
     DAILY_STEPS_URL,
     DEFAULT_HEADERS,
+    DEVICE_LAST_USED_URL,
+    DEVICE_SOLAR_URL,
     DEVICES_URL,
     ENDURANCE_SCORE_URL,
     FITNESS_AGE_URL,
@@ -132,6 +134,28 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "activeSets",
     "totalReps",
     "totalVolume",
+    # E-bike (ANT+ LEV, e.g. via Edge devices)
+    "eBikeBatteryRemaining",
+    "eBikeBatteryUsage",
+    "eBikeMaxAssistModes",
+}
+
+# Device registration payload is ~150 keys of mostly capability flags;
+# keep only the identity/inventory fields useful as sensor attributes.
+DEVICE_ESSENTIAL_KEYS = {
+    "deviceId",
+    "unitId",
+    "displayName",
+    "productDisplayName",
+    "applicationKey",
+    "serialNumber",
+    "partNumber",
+    "productSku",
+    "imageUrl",
+    "primary",
+    "primaryActivityTrackerIndicator",
+    "deviceCategories",
+    "wifi",
 }
 
 # GMT datetime fields to rename and convert to UTC timezone
@@ -250,6 +274,11 @@ def _convert_datetime_fields(data: dict[str, Any]) -> dict[str, Any]:
     # Note: DATETIME_FIELDS_LOCAL_KEEP_STRING are intentionally kept as strings
 
     return result
+
+
+def _trim_device(device: dict[str, Any]) -> dict[str, Any]:
+    """Trim a registered device to essential fields only."""
+    return {k: v for k, v in device.items() if k in DEVICE_ESSENTIAL_KEYS}
 
 
 def _trim_activity(activity: dict[str, Any]) -> dict[str, Any]:
@@ -1051,6 +1080,43 @@ class GarminClient:
         data = await self._request("GET", DEVICES_URL)
         return data if isinstance(data, list) else []
 
+    async def get_device_solar_data(
+        self, device_id: int, target_date: date | None = None
+    ) -> dict[str, Any]:
+        """Get solar input data for a solar-capable device.
+
+        Returns the deviceSolarInput dict with solarDailyDataDTOs containing
+        solarInputReadings (solarUtilization %, activityTimeGainMs) per reading.
+        Empty dict for devices without solar charging.
+        """
+        if target_date is None:
+            target_date = date.today()
+
+        day = target_date.isoformat()
+        url = f"{DEVICE_SOLAR_URL}/{device_id}/{day}/{day}"
+        params = {"singleDayView": "true"}
+        data = await self._request("GET", url, params=params)
+        if isinstance(data, dict):
+            solar_input = data.get("deviceSolarInput")
+            if isinstance(solar_input, dict):
+                return solar_input
+        return {}
+
+    async def get_device_last_used(self) -> dict[str, Any]:
+        """Get the last used device and its last upload (sync) time.
+
+        Returns dict with lastUsedDeviceName, lastUsedDeviceApplicationKey,
+        userDeviceId, imageUrl and lastSyncTime (UTC datetime converted from
+        lastUsedDeviceUploadTime epoch milliseconds).
+        """
+        data = await self._request("GET", DEVICE_LAST_USED_URL)
+        if not isinstance(data, dict):
+            return {}
+        upload_ms = data.pop("lastUsedDeviceUploadTime", None)
+        if upload_ms is not None:
+            data["lastSyncTime"] = datetime.fromtimestamp(upload_ms / 1000, tz=UTC)
+        return data
+
     async def get_goals(self, status: str = "active") -> list[dict[str, Any]]:
         """Get goals by status (active, future, past)."""
         params = {"status": status}
@@ -1162,15 +1228,21 @@ class GarminClient:
         data = await self._request("GET", url)
         return data if isinstance(data, dict) else {}
 
-    async def get_device_alarms(self) -> list[dict[str, Any]]:
+    async def get_device_alarms(
+        self, devices: list[dict[str, Any]] | None = None
+    ) -> list[dict[str, Any]]:
         """Get device alarms from all devices.
 
         Alarms are stored in device settings, not at a separate endpoint.
         This mirrors python-garminconnect's approach.
         Note: Not all devices sync alarms to Garmin Connect cloud.
+
+        Args:
+            devices: Optional pre-fetched device list to avoid an extra API call.
         """
         alarms: list[dict[str, Any]] = []
-        devices = await self._safe_call(self.get_devices)
+        if devices is None:
+            devices = await self._safe_call(self.get_devices)
         if devices:
             for device in devices:
                 device_id = device.get("deviceId")
@@ -2278,10 +2350,11 @@ class GarminClient:
         }
 
     async def fetch_gear_data(self, timezone: str | None = None) -> dict[str, Any]:
-        """Fetch gear data: gear, defaults, stats, alarms.
+        """Fetch gear data: gear, defaults, stats, alarms, solar, devices.
 
         API calls: get_gear, get_gear_defaults, get_gear_stats×N,
-                   get_device_alarms (4+ calls)
+                   get_devices, get_device_alarms, get_device_solar_data×N,
+                   get_device_last_used
         """
         # Get user profile ID for gear API
         profile = await self._safe_call(self.get_user_profile)
@@ -2345,15 +2418,57 @@ class GarminClient:
                             )
                             gear_stats.append(stats)
 
+        # Devices (shared by alarms and solar)
+        devices = await self._safe_call(self.get_devices) or []
+        trimmed_devices = [_trim_device(d) for d in devices]
+
+        # Last used device / last sync time
+        last_used_device = await self._safe_call(self.get_device_last_used) or {}
+
         # Alarms
-        alarms = await self._safe_call(self.get_device_alarms)
+        alarms = await self._safe_call(self.get_device_alarms, devices)
         next_alarms = self._calculate_next_active_alarms(alarms, timezone)
+
+        # Solar intensity per solar-capable device
+        solar_intensity: list[dict[str, Any]] = []
+        for device in devices:
+            device_id = device.get("deviceId")
+            if not device_id:
+                continue
+            solar = await self._safe_call(self.get_device_solar_data, device_id)
+            dtos = (solar or {}).get("solarDailyDataDTOs") or []
+            if not dtos:
+                continue
+            readings = dtos[0].get("solarInputReadings") or []
+            latest = None
+            for reading in readings:
+                if reading.get("solarUtilization") is not None:
+                    latest = reading
+            solar_intensity.append(
+                {
+                    "deviceId": device_id,
+                    "deviceName": device.get("productDisplayName")
+                    or device.get("deviceTypeName"),
+                    "solarUtilization": latest.get("solarUtilization")
+                    if latest
+                    else None,
+                    "activityTimeGainMs": latest.get("activityTimeGainMs")
+                    if latest
+                    else None,
+                    "readingTimestampGmt": latest.get("readingTimestampGmt")
+                    if latest
+                    else None,
+                }
+            )
 
         return {
             "gear": gear,
             "gearStats": gear_stats,
             "gearDefaults": gear_defaults,
             "nextAlarm": next_alarms,
+            "solarIntensity": solar_intensity,
+            "devices": trimmed_devices,
+            "lastUsedDevice": last_used_device,
         }
 
     async def fetch_blood_pressure_data(
