@@ -181,6 +181,58 @@ class TestGarminClient:
 
         assert solar == {}
 
+    async def test_download_activity_gpx(self):
+        """Test download_activity returns raw bytes for export formats."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        gpx_bytes = b'<?xml version="1.0"?><gpx></gpx>'
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = gpx_bytes
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = resp
+            data = await client.download_activity(12345, "gpx")
+
+        assert data == gpx_bytes
+
+    async def test_download_activity_fit_extracts_zip(self):
+        """Test download_activity fit format extracts the file from the zip."""
+        import io
+        import zipfile
+
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        fit_bytes = b"\x0e\x10fake-fit-content"
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("12345.fit", fit_bytes)
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.content = buf.getvalue()
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            # First to_thread call is the HTTP request, second is zip extraction
+            def dispatch(func, *args, **kwargs):
+                if mock_thread.call_count == 1:
+                    return resp
+                return func(*args, **kwargs)
+
+            mock_thread.side_effect = dispatch
+            data = await client.download_activity(12345, "fit")
+
+        assert data == fit_bytes
+
+    async def test_download_activity_invalid_format(self):
+        """Test download_activity rejects unknown formats."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        with pytest.raises(ValueError, match="Invalid file format"):
+            await client.download_activity(12345, "pdf")
+
     async def test_get_device_last_used(self):
         """Test get_device_last_used converts upload time to UTC datetime."""
         auth = _make_auth()

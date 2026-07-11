@@ -161,6 +161,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_activities_by_date()` | Activities in date range |
 | `get_activity_details()` | Detailed activity with polyline |
 | `get_activity_hr_in_timezones()` | HR time in zones |
+| `download_activity(activity_id, file_format)` | Download activity file (fit/original/tcx/gpx/kml/csv) |
 | `get_workouts()` | Scheduled workouts |
 | `get_training_readiness()` | Training readiness score |
 | `get_training_status()` | Training status |

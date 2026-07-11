@@ -101,6 +101,15 @@ async def main():
 
     today = date.today()
 
+    # === USER PROFILE ===
+    print("\n" + "=" * 60)
+    print("  FETCHING USER PROFILE")
+    print("=" * 60)
+    profile = await client.get_user_profile()
+    print(f"  id: {profile.id}")
+    print(f"  profile_id: {profile.profile_id}")
+    print(f"  display_name: {profile.display_name}")
+
     # === FETCH CORE DATA ===
     print("\n" + "=" * 60)
     print("  FETCHING CORE DATA (today)")
@@ -168,6 +177,13 @@ async def main():
     menstrual_data = await client.fetch_menstrual_data(today)
     print_section("Menstrual Data", menstrual_data)
 
+    # === FETCH NUTRITION DATA ===
+    print("\n" + "=" * 60)
+    print("  FETCHING NUTRITION DATA (requires Connect+)")
+    print("=" * 60)
+    nutrition_data = await client.fetch_nutrition_data(today)
+    print_section("Nutrition Data", nutrition_data)
+
     # === FETCH SENSORS DATA ===
     print("\n" + "=" * 60)
     print("  FETCHING SENSORS DATA")
@@ -189,6 +205,7 @@ async def main():
         "gear": gear_data,
         "blood_pressure": blood_pressure_data,
         "menstrual": menstrual_data,
+        "nutrition": nutrition_data,
         "sensors": sensors_data,
     }
 

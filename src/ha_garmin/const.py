@@ -83,6 +83,8 @@ NUTRITION_MEALS_URL = f"{GARMIN_CONNECT_API}/nutrition-service/meal/meals"
 # Upload/Write endpoints
 UPLOAD_URL = f"{GARMIN_CONNECT_API}/upload-service/upload"
 ACTIVITY_CREATE_URL = f"{GARMIN_CONNECT_API}/activity-service/activity"
+ACTIVITY_DOWNLOAD_URL = f"{GARMIN_CONNECT_API}/download-service/files/activity"
+ACTIVITY_EXPORT_URL = f"{GARMIN_CONNECT_API}/download-service/export"
 GEAR_LINK_URL = f"{GARMIN_CONNECT_API}/gear-service/gear/link"
 
 # Default headers for cookie-based API auth

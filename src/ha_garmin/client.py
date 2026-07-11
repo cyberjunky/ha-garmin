@@ -11,6 +11,8 @@ from .const import (
     ACTIVITIES_URL,
     ACTIVITY_CREATE_URL,
     ACTIVITY_DETAILS_URL,
+    ACTIVITY_DOWNLOAD_URL,
+    ACTIVITY_EXPORT_URL,
     BADGES_URL,
     BLOOD_PRESSURE_SET_URL,
     BLOOD_PRESSURE_URL,
@@ -765,6 +767,45 @@ class GarminClient:
             _LOGGER.debug("Request to %s failed: %s", url, err)
             raise GarminAPIError(f"Request failed: {err}") from err
 
+    async def _request_bytes(self, url: str) -> bytes:
+        """Make authenticated GET request returning raw response bytes.
+
+        Used for file downloads (FIT/TCX/GPX exports) where the response
+        is not JSON.
+        """
+        import requests as stdlib_requests
+
+        if not self._auth.is_authenticated:
+            raise GarminAuthError("Not authenticated")
+
+        if self._auth._token_expires_soon():
+            _LOGGER.debug("Token expiring soon, refreshing proactively")
+            await self._auth.refresh_session()
+
+        full_url = self._get_url(url)
+
+        def _headers() -> dict[str, str]:
+            # Download endpoints return 406 for Accept: application/json
+            return {**self._auth.get_api_headers(), "Accept": "*/*"}
+
+        def _do_request(hdrs: dict[str, str]) -> Any:
+            return stdlib_requests.get(full_url, headers=hdrs, timeout=60)
+
+        response = await asyncio.to_thread(_do_request, _headers())
+
+        if response.status_code == 401:
+            _LOGGER.debug("Session expired, refreshing")
+            if not await self._auth.refresh_session():
+                raise GarminAuthError("Session expired, re-login required")
+            response = await asyncio.to_thread(_do_request, _headers())
+
+        if response.status_code != 200:
+            raise GarminAPIError(
+                f"Download from {url} failed: {response.status_code}",
+                response.status_code,
+            )
+        return bytes(response.content)
+
     async def _safe_call(self, func: Any, *args: Any, **kwargs: Any) -> Any:
         """Safely call an API function, returning None on error."""
         try:
@@ -774,17 +815,6 @@ class GarminClient:
             return None
 
     # ========== Main Data Fetching ==========
-    # DEPRECATED: The get_data() method has been removed.
-    # Use specialized fetch methods instead:
-    # - fetch_core_data() for summary, steps, sleep, stress, HRV
-    # - fetch_activity_data() for activities, polylines, workouts
-    # - fetch_training_data() for training readiness, status, lactate threshold
-    # - fetch_body_data() for weight, body composition, hydration, fitness age
-    # - fetch_goals_data() for goals, badges
-    # - fetch_gear_data() for gear stats, alarms
-    # - fetch_blood_pressure_data() for blood pressure
-    # - fetch_menstrual_data() for menstrual cycle data
-    # - fetch_nutrition_data() for nutrition log (Connect+)
 
     def _calculate_next_active_alarms(
         self, alarms: list[dict[str, Any]] | None, timezone: str | None
@@ -1906,6 +1936,51 @@ class GarminClient:
         }
 
         return await self._post_request(ACTIVITY_CREATE_URL, payload)
+
+    async def download_activity(
+        self, activity_id: int, file_format: str = "fit"
+    ) -> bytes:
+        """Download an activity file.
+
+        Args:
+            activity_id: Garmin activity ID
+            file_format: fit (extracted from the original zip), original
+                (raw zip as recorded by the device), tcx, gpx, kml or csv
+
+        Returns:
+            Raw file bytes.
+        """
+        fmt = file_format.lower()
+        allowed_formats = {"fit", "original", "tcx", "gpx", "kml", "csv"}
+        if fmt not in allowed_formats:
+            raise ValueError(
+                f"Invalid file format '{file_format}'. "
+                f"Allowed: {', '.join(sorted(allowed_formats))}"
+            )
+
+        if fmt in ("fit", "original"):
+            url = f"{ACTIVITY_DOWNLOAD_URL}/{activity_id}"
+        else:
+            url = f"{ACTIVITY_EXPORT_URL}/{fmt}/activity/{activity_id}"
+
+        _LOGGER.debug("Downloading activity %s as %s", activity_id, fmt)
+        content = await self._request_bytes(url)
+
+        if fmt == "fit":
+            # The original endpoint returns a zip wrapping the .fit file
+            import io
+            import zipfile
+
+            def _extract() -> bytes:
+                with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                    names = zf.namelist()
+                    if not names:
+                        raise GarminAPIError(f"Activity {activity_id} archive is empty")
+                    return zf.read(names[0])
+
+            content = await asyncio.to_thread(_extract)
+
+        return content
 
     async def upload_activity(self, file_path: str) -> dict[str, Any]:
         """Upload an activity file (FIT, GPX, TCX).
