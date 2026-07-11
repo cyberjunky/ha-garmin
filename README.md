@@ -153,12 +153,11 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | Method | Description |
 | ------ | ----------- |
 | `get_user_profile()` | User profile info |
-| `get_user_summary()` | Daily summary (steps, HR, stress, body battery) |
 | `get_daily_steps()` | Steps for date range |
 | `get_body_composition()` | Weight, BMI, body fat |
 | `get_fitness_age()` | Fitness age metrics |
 | `get_hydration_data()` | Daily hydration |
-| `get_activities_by_date()` | Activities in date range |
+| `get_activities()` | Most recent activities (newest first, no date filter) |
 | `get_activity_details()` | Detailed activity with polyline |
 | `get_activity_hr_in_timezones()` | HR time in zones |
 | `download_activity(activity_id, file_format)` | Download activity file (fit/original/tcx/gpx/kml/csv) |
@@ -169,7 +168,6 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_endurance_score()` | Endurance score |
 | `get_hill_score()` | Hill score |
 | `get_lactate_threshold()` | Lactate threshold |
-| `get_hrv_data()` | Heart rate variability |
 | `get_goals()` | User goals by status |
 | `get_earned_badges()` | Earned badges |
 | `get_gear()` | User gear items |

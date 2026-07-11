@@ -27,6 +27,7 @@ DAILY_STEPS_URL = f"{GARMIN_CONNECT_API}/usersummary-service/stats/steps/daily"
 
 # Body composition endpoints
 BODY_COMPOSITION_URL = f"{GARMIN_CONNECT_API}/weight-service/weight/range"
+WEIGHT_LATEST_URL = f"{GARMIN_CONNECT_API}/weight-service/weight/latest"
 
 # Fitness/Training endpoints
 TRAINING_READINESS_URL = (

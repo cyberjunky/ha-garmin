@@ -48,6 +48,7 @@ from .const import (
     UPLOAD_URL,
     USER_PROFILE_URL,
     USER_SUMMARY_URL,
+    WEIGHT_LATEST_URL,
     WORKOUTS_URL,
 )
 from .exceptions import GarminAPIError, GarminAuthError, GarminRateLimitError
@@ -958,17 +959,6 @@ class GarminClient:
         self._profile_cache = UserProfile.model_validate(data)
         return self._profile_cache
 
-    async def get_user_summary(self, target_date: date | None = None) -> dict[str, Any]:
-        """Get daily summary for a date."""
-        if target_date is None:
-            target_date = date.today()
-
-        profile = await self.get_user_profile()
-        url = f"{USER_SUMMARY_URL}/{profile.display_name}"
-        params = {"calendarDate": target_date.isoformat()}
-        data = await self._request("GET", url, params=params)
-        return data if isinstance(data, dict) else {}
-
     async def get_daily_steps(
         self, start_date: date, end_date: date
     ) -> list[dict[str, Any]]:
@@ -1012,18 +1002,21 @@ class GarminClient:
             if latest:
                 return latest
 
-        return data.get("totalAverage", {})
+        total_average = data.get("totalAverage") or {}
+        if total_average.get("weight") is not None:
+            return total_average
 
-    async def get_activities_by_date(
-        self, start_date: date, end_date: date
+        # No measurement in the 30-day window; fall back to the latest
+        # weigh-in regardless of age so sensors don't go blank.
+        params = {"date": target_date.isoformat()}
+        latest_data = await self._request("GET", WEIGHT_LATEST_URL, params=params)
+        return latest_data if isinstance(latest_data, dict) else {}
+
+    async def get_activities(
+        self, start: int = 0, limit: int = 10
     ) -> list[dict[str, Any]]:
-        """Get activities in a date range."""
-        params = {
-            "startDate": start_date.isoformat(),
-            "endDate": end_date.isoformat(),
-            "start": 0,
-            "limit": 100,
-        }
+        """Get the most recent activities regardless of age (newest first)."""
+        params = {"start": start, "limit": limit}
         data = await self._request("GET", ACTIVITIES_URL, params=params)
         return data if isinstance(data, list) else []
 
@@ -1057,15 +1050,6 @@ class GarminClient:
         if isinstance(data, dict):
             return data.get("workouts", [])
         return data if isinstance(data, list) else []
-
-    async def get_hrv_data(self, target_date: date | None = None) -> dict[str, Any]:
-        """Get HRV data for a date."""
-        if target_date is None:
-            target_date = date.today()
-
-        url = f"{HRV_URL}/{target_date.isoformat()}"
-        data = await self._request("GET", url)
-        return data if isinstance(data, dict) else {}
 
     async def get_hydration_data(
         self, target_date: date | None = None
@@ -2245,21 +2229,19 @@ class GarminClient:
     ) -> dict[str, Any]:
         """Fetch activity data: activities, polyline, HR zones, workouts.
 
-        API calls: get_activities_by_date, get_activity_details,
+        API calls: get_activities, get_activity_details,
                    get_activity_hr_in_timezones, get_workouts (4 calls)
+
+        target_date is kept for signature compatibility; activities are
+        fetched by recency (newest 10), not by date.
         """
-        if target_date is None:
-            target_date = date.today()
 
-        week_ago = target_date - timedelta(days=7)
-
-        # Activities
-        activities_by_date = await self._safe_call(
-            self.get_activities_by_date, week_ago, target_date + timedelta(days=1)
-        )
+        # The 10 most recent activities regardless of age (newest first), so
+        # lastActivity never goes blank after an inactive week (issue #519).
+        recent_activities = await self._safe_call(self.get_activities, 0, 10)
         last_activity: dict[str, Any] = {}
-        if activities_by_date:
-            last_activity = dict(activities_by_date[0])
+        if recent_activities:
+            last_activity = dict(recent_activities[0])
             activity_id = last_activity.get("activityId")
 
             # Fetch polyline
@@ -2294,7 +2276,7 @@ class GarminClient:
         workouts = [_convert_datetime_fields(w) for w in workouts]
 
         # Trim activities to essential fields
-        trimmed_activities = [_trim_activity(a) for a in (activities_by_date or [])]
+        trimmed_activities = [_trim_activity(a) for a in (recent_activities or [])]
         trimmed_last_activity = _trim_activity(last_activity) if last_activity else {}
 
         return {
@@ -2394,11 +2376,7 @@ class GarminClient:
         # Fall back to last activity's vO2MaxValue if training status has none.
         # Some devices never populate mostRecentVO2Max in the training status API.
         if not result.get("vo2MaxValue"):
-            activities = await self._safe_call(
-                self.get_activities_by_date,
-                target_date - timedelta(days=30),
-                target_date + timedelta(days=1),
-            )
+            activities = await self._safe_call(self.get_activities, 0, 10)
             if activities:
                 activity_vo2 = next(
                     (
@@ -2629,9 +2607,11 @@ class GarminClient:
             target_date = date.today()
 
         blood_pressure_data: dict[str, Any] = {}
+        # 365-day window: BP is logged manually and often infrequently; a
+        # 30-day window made sensors go blank between measurements.
         bp_response = await self._safe_call(
             self.get_blood_pressure,
-            target_date - timedelta(days=30),
+            target_date - timedelta(days=365),
             target_date,
         )
         if bp_response and isinstance(bp_response, dict):

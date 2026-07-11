@@ -56,32 +56,83 @@ class TestGarminClient:
         assert profile.id == 12345
         assert profile.profile_id == 67890
 
-    async def test_get_activities(self):
-        """Test get_activities_by_date returns list and preserves fields."""
+    async def test_get_activities_by_recency(self):
+        """Test get_activities queries by start/limit without date filters."""
         auth = _make_auth()
         client = GarminClient(auth)
 
-        payload = [
-            {
-                "activityId": 1,
-                "activityName": "Morning Run",
-                "activityType": {"typeKey": "running"},
-                "startTimeLocal": "2024-01-01T08:00:00",
-                "startTimeGMT": "2024-01-01T07:00:00",
-                "distance": 5000.0,
-                "duration": 1800.0,
-            }
-        ]
+        payload = [{"activityId": 1, "activityName": "Old Ride"}]
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
-            end_date = date.today()
-            start_date = end_date - timedelta(days=7)
-            activities = await client.get_activities_by_date(start_date, end_date)
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock_req:
+            mock_req.return_value = payload
+            activities = await client.get_activities(0, 10)
 
-        assert len(activities) == 1
-        assert activities[0]["activityName"] == "Morning Run"
-        assert activities[0]["distance"] == 5000.0
+        assert activities == payload
+        params = mock_req.call_args.kwargs.get("params") or mock_req.call_args[0][2]
+        assert params == {"start": 0, "limit": 10}
+
+    async def test_fetch_activity_data_uses_recency_not_window(self):
+        """Test fetch_activity_data returns lastActivity even for old activities (#519)."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        old_activity = {
+            "activityId": 42,
+            "activityName": "Winter Run",
+            "activityType": {"typeKey": "running"},
+            "startTimeGMT": "2024-01-01T07:00:00",
+            "hasPolyline": False,
+        }
+
+        with (
+            patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client, "get_workouts", new_callable=AsyncMock
+            ) as mock_workouts,
+            patch.object(
+                client, "get_activity_hr_in_timezones", new_callable=AsyncMock
+            ) as mock_hr,
+        ):
+            mock_acts.return_value = [old_activity]
+            mock_workouts.return_value = []
+            mock_hr.return_value = []
+            data = await client.fetch_activity_data()
+
+        mock_acts.assert_awaited_once_with(0, 10)
+        assert data["lastActivity"]["activityId"] == 42
+        assert len(data["lastActivities"]) == 1
+
+    async def test_get_body_composition_falls_back_to_weight_latest(self):
+        """Test get_body_composition uses weight/latest when the 30-day window is empty."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        latest_payload = {"weight": 89400.0, "bmi": 26.4, "bodyFat": 23.6}
+
+        async def fake_request(method, url, params=None, **kwargs):
+            if "weight/latest" in url:
+                return latest_payload
+            return {"dailyWeightSummaries": [], "totalAverage": {}}
+
+        with patch.object(client, "_request", side_effect=fake_request):
+            body = await client.get_body_composition(date(2026, 7, 11))
+
+        assert body == latest_payload
+
+    async def test_fetch_blood_pressure_uses_year_window(self):
+        """Test fetch_blood_pressure_data queries a 365-day range."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        with patch.object(
+            client, "get_blood_pressure", new_callable=AsyncMock
+        ) as mock_bp:
+            mock_bp.return_value = {}
+            await client.fetch_blood_pressure_data(date(2026, 7, 11))
+
+        start, end = mock_bp.call_args[0]
+        assert end == date(2026, 7, 11)
+        assert (end - start).days == 365
 
     def test_trim_activity_keeps_ebike_fields(self):
         """Test _trim_activity preserves e-bike fields and drops unknown keys."""
