@@ -102,6 +102,101 @@ class TestGarminClient:
         assert data["lastActivity"]["activityId"] == 42
         assert len(data["lastActivities"]) == 1
 
+    async def test_fetch_activity_data_merges_ebike_fields(self):
+        """Test fetch_activity_data merges e-bike fields from the summary endpoint (#527)."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        ride = {
+            "activityId": 7,
+            "activityName": "E-Bike Ride",
+            "activityType": {"typeKey": "e_bike_fitness"},
+            "hasPolyline": False,
+        }
+        summary = {
+            "activityId": 7,
+            "eBikeBatteryRemaining": 42,
+            "eBikeBatteryUsage": 19,
+            "eBikeMaxAssistModes": 7,
+            "eBikeAssistModeInfoDTOList": None,
+        }
+
+        with (
+            patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client, "get_activity", new_callable=AsyncMock
+            ) as mock_summary,
+            patch.object(
+                client, "get_workouts", new_callable=AsyncMock
+            ) as mock_workouts,
+            patch.object(
+                client, "get_activity_hr_in_timezones", new_callable=AsyncMock
+            ) as mock_hr,
+        ):
+            mock_acts.return_value = [ride]
+            mock_summary.return_value = summary
+            mock_workouts.return_value = []
+            mock_hr.return_value = []
+            data = await client.fetch_activity_data()
+
+        mock_summary.assert_awaited_once_with(7)
+        assert data["lastActivity"]["eBikeBatteryRemaining"] == 42
+        assert data["lastActivity"]["eBikeBatteryUsage"] == 19
+        assert data["lastActivity"]["eBikeMaxAssistModes"] == 7
+        assert "eBikeAssistModeInfoDTOList" not in data["lastActivity"]
+
+    async def test_fetch_activity_data_skips_summary_for_non_rides(self):
+        """Test fetch_activity_data does not fetch the summary for non-ride activities."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        run = {
+            "activityId": 8,
+            "activityName": "Morning Run",
+            "activityType": {"typeKey": "running"},
+            "hasPolyline": False,
+        }
+
+        with (
+            patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client, "get_activity", new_callable=AsyncMock
+            ) as mock_summary,
+            patch.object(
+                client, "get_workouts", new_callable=AsyncMock
+            ) as mock_workouts,
+            patch.object(
+                client, "get_activity_hr_in_timezones", new_callable=AsyncMock
+            ) as mock_hr,
+        ):
+            mock_acts.return_value = [run]
+            mock_workouts.return_value = []
+            mock_hr.return_value = []
+            data = await client.fetch_activity_data()
+
+        mock_summary.assert_not_awaited()
+        assert "eBikeBatteryRemaining" not in data["lastActivity"]
+
+    def test_is_cycling_activity(self):
+        """Test _is_cycling_activity recognizes ride type keys."""
+        from ha_garmin.client import _is_cycling_activity
+
+        for type_key in (
+            "cycling",
+            "road_biking",
+            "mountain_biking",
+            "gravel_cycling",
+            "e_bike_fitness",
+            "e_bike_mountain",
+            "virtual_ride",
+            "indoor_cycling",
+        ):
+            assert _is_cycling_activity({"activityType": {"typeKey": type_key}})
+
+        for type_key in ("running", "lap_swimming", "strength_training", None):
+            assert not _is_cycling_activity({"activityType": {"typeKey": type_key}})
+        assert not _is_cycling_activity({})
+
     async def test_get_body_composition_falls_back_to_weight_latest(self):
         """Test get_body_composition uses weight/latest when the 30-day window is empty."""
         auth = _make_auth()

@@ -143,6 +143,14 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "eBikeMaxAssistModes",
 }
 
+# E-bike fields only appear in the per-activity summary endpoint response,
+# not in the activities list response (#527); merged in fetch_activity_data.
+EBIKE_ACTIVITY_KEYS = (
+    "eBikeBatteryRemaining",
+    "eBikeBatteryUsage",
+    "eBikeMaxAssistModes",
+)
+
 # Device registration payload is ~150 keys of mostly capability flags;
 # keep only the identity/inventory fields useful as sensor attributes.
 DEVICE_ESSENTIAL_KEYS = {
@@ -282,6 +290,14 @@ def _convert_datetime_fields(data: dict[str, Any]) -> dict[str, Any]:
 def _trim_device(device: dict[str, Any]) -> dict[str, Any]:
     """Trim a registered device to essential fields only."""
     return {k: v for k, v in device.items() if k in DEVICE_ESSENTIAL_KEYS}
+
+
+def _is_cycling_activity(activity: dict[str, Any]) -> bool:
+    """True when the activity is a ride (only rides can carry e-bike data)."""
+    raw_type = activity.get("activityType")
+    type_key = raw_type.get("typeKey") if isinstance(raw_type, dict) else raw_type
+    type_key = str(type_key or "").lower()
+    return any(token in type_key for token in ("bik", "cycl", "ride"))
 
 
 def _trim_activity(activity: dict[str, Any]) -> dict[str, Any]:
@@ -1019,6 +1035,16 @@ class GarminClient:
         params = {"start": start, "limit": limit}
         data = await self._request("GET", ACTIVITIES_URL, params=params)
         return data if isinstance(data, list) else []
+
+    async def get_activity(self, activity_id: int) -> dict[str, Any]:
+        """Get the summary for a single activity.
+
+        Unlike the activities list, this response carries the e-bike
+        (ANT+ LEV) fields such as eBikeBatteryRemaining.
+        """
+        url = f"{ACTIVITY_DETAILS_URL}/{activity_id}"
+        data = await self._request("GET", url)
+        return data if isinstance(data, dict) else {}
 
     async def get_activity_details(
         self, activity_id: int, max_chart_size: int = 100, max_poly_size: int = 4000
@@ -2230,7 +2256,8 @@ class GarminClient:
         """Fetch activity data: activities, polyline, HR zones, workouts.
 
         API calls: get_activities, get_activity_details,
-                   get_activity_hr_in_timezones, get_workouts (4 calls)
+                   get_activity_hr_in_timezones, get_workouts (4 calls),
+                   plus get_activity for rides (e-bike fields, #527)
 
         target_date is kept for signature compatibility; activities are
         fetched by recency (newest 10), not by date.
@@ -2260,6 +2287,15 @@ class GarminClient:
                         ]
                 except GarminAPIError as err:
                     _LOGGER.debug("Failed to fetch polyline: %s", err)
+
+            # E-bike fields (ANT+ LEV) only exist on the per-activity summary
+            # endpoint, not in the activities list response (#527).
+            if activity_id is not None and _is_cycling_activity(last_activity):
+                summary = await self._safe_call(self.get_activity, int(activity_id))
+                for key in EBIKE_ACTIVITY_KEYS:
+                    value = (summary or {}).get(key)
+                    if value is not None:
+                        last_activity[key] = value
 
             # Fetch HR zones
             if activity_id:
