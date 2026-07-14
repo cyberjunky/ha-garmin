@@ -651,6 +651,7 @@ class GarminClient:
         self._is_cn = is_cn
         self._base_url = GARMIN_CN_CONNECT_API if is_cn else GARMIN_CONNECT_API
         self._profile_cache: UserProfile | None = None
+        self._ebike_fields_cache: tuple[int, dict[str, Any]] | None = None
 
     def _get_url(self, url: str) -> str:
         """Resolve URL to correct connectapi domain."""
@@ -1045,6 +1046,30 @@ class GarminClient:
         url = f"{ACTIVITY_DETAILS_URL}/{activity_id}"
         data = await self._request("GET", url)
         return data if isinstance(data, dict) else {}
+
+    async def _get_ebike_fields(self, activity_id: int) -> dict[str, Any]:
+        """Fetch e-bike fields from the activity summary endpoint.
+
+        The list endpoint never includes them (issue
+        home-assistant-garmin_connect#527). Cached per activity, so it
+        costs one extra API call per new ride, not per poll.
+        """
+        if (
+            self._ebike_fields_cache is not None
+            and self._ebike_fields_cache[0] == activity_id
+        ):
+            return self._ebike_fields_cache[1]
+
+        summary = await self._safe_call(self.get_activity, activity_id) or {}
+        # Fields have been observed at the top level; check summaryDTO too
+        source = {**(summary.get("summaryDTO") or {}), **summary}
+        fields = {
+            key: source[key]
+            for key in EBIKE_ACTIVITY_KEYS
+            if source.get(key) is not None
+        }
+        self._ebike_fields_cache = (activity_id, fields)
+        return fields
 
     async def get_activity_details(
         self, activity_id: int, max_chart_size: int = 100, max_poly_size: int = 4000
@@ -2271,6 +2296,10 @@ class GarminClient:
             last_activity = dict(recent_activities[0])
             activity_id = last_activity.get("activityId")
 
+            # E-bike battery fields live only on the summary endpoint (#527)
+            if activity_id is not None and _is_cycling_activity(last_activity):
+                last_activity.update(await self._get_ebike_fields(int(activity_id)))
+
             # Fetch polyline
             if last_activity.get("hasPolyline") and activity_id is not None:
                 try:
@@ -2287,15 +2316,6 @@ class GarminClient:
                         ]
                 except GarminAPIError as err:
                     _LOGGER.debug("Failed to fetch polyline: %s", err)
-
-            # E-bike fields (ANT+ LEV) only exist on the per-activity summary
-            # endpoint, not in the activities list response (#527).
-            if activity_id is not None and _is_cycling_activity(last_activity):
-                summary = await self._safe_call(self.get_activity, int(activity_id))
-                for key in EBIKE_ACTIVITY_KEYS:
-                    value = (summary or {}).get(key)
-                    if value is not None:
-                        last_activity[key] = value
 
             # Fetch HR zones
             if activity_id:
