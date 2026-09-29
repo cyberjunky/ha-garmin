@@ -366,8 +366,7 @@ def _trim_activity(activity: dict[str, Any]) -> dict[str, Any]:
 # shape, most of them null for any given item type. Scheduled sessions come
 # in two item types: "workout" for self-scheduled workouts and Garmin Coach /
 # adaptive-plan sessions (#521), and "fbtAdaptiveWorkout" for Daily
-# Suggested / adaptive sessions (#595; the snippet quoted there shows a
-# trainingPlanId and no atpPlanId). These are the fields relevant to both.
+# Suggested / adaptive sessions (#595). These are the fields relevant to both.
 CALENDAR_WORKOUT_ITEM_TYPES = ("workout", "fbtAdaptiveWorkout")
 CALENDAR_WORKOUT_ESSENTIAL_KEYS = {
     "id",
