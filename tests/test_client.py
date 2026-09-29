@@ -154,9 +154,10 @@ class TestGarminClient:
         across this month and next (home-assistant-garmin_connect#521).
 
         Real calendarItems mix several unrelated event types under
-        `itemType` (weigh-ins, naps, workouts); only "workout" is a Coach /
-        adaptive-plan session or self-scheduled workout. Past items and
-        other item types must not leak through.
+        `itemType` (weigh-ins, naps, workouts); only scheduled sessions
+        ("workout" here; "fbtAdaptiveWorkout" is covered below, #595) are a
+        Coach / adaptive-plan session or self-scheduled workout. Past items
+        and other item types must not leak through.
         """
         auth = _make_auth()
         client = GarminClient(auth)
@@ -247,6 +248,140 @@ class TestGarminClient:
         assert data["trainingPlanGoalEvent"]["targetDistanceUnit"] == "kilometer"
         assert data["trainingPlanGoalEvent"]["trainingPlanType"] == "COACH_ATP"
         assert data["trainingPlanGoalEvent"]["projectedRaceTimeDurationSeconds"] == 1829
+
+    @staticmethod
+    def _calendar_request_router(
+        calendar_items_by_month: dict[tuple[int, int], list[dict]],
+        goal_events: list[dict] | None = None,
+        events_params: list[dict] | None = None,
+    ):
+        """Fake `_request` that answers only the calendar endpoints.
+
+        Everything above the HTTP layer (get_scheduled_workouts,
+        get_calendar_events_for_plan, the filtering in fetch_activity_data)
+        runs for real. Other endpoints fetch_activity_data touches get [].
+        """
+        from ha_garmin.const import CALENDAR_EVENTS_URL, CALENDAR_URL
+
+        month_url = re.compile(re.escape(CALENDAR_URL) + r"/(\d+)/month/(\d+)$")
+
+        async def fake_request(method, url, params=None):
+            match = month_url.match(url)
+            if match:
+                year, zero_based_month = int(match[1]), int(match[2])
+                items = calendar_items_by_month.get((year, zero_based_month + 1), [])
+                return {"calendarItems": items}
+            if url == CALENDAR_EVENTS_URL:
+                if events_params is not None:
+                    events_params.append(params)
+                return goal_events or []
+            return []
+
+        return fake_request
+
+    async def test_fetch_activity_data_includes_fbt_adaptive_workout(self):
+        """A Daily Suggested / adaptive session is a scheduled workout
+        too (home-assistant-garmin_connect#595).
+
+        calendar-service reports it with itemType "fbtAdaptiveWorkout", not
+        "workout". The item below is the one quoted in the issue, with only
+        its date moved to today so the upcoming-only filter keeps it.
+        """
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        today = date.today()
+        today_str = today.isoformat()
+        issue_595_item = {
+            "id": 1789814567000,
+            "trainingPlanId": 45489509,
+            "itemType": "fbtAdaptiveWorkout",
+            "title": "Basis",
+            "date": "2026-09-19",
+            "sportTypeKey": "running",
+        }
+        fbt_today = {**issue_595_item, "date": today_str}
+
+        events_params: list[dict] = []
+        fake_request = self._calendar_request_router(
+            {(today.year, today.month): [fbt_today]}, events_params=events_params
+        )
+        with patch.object(client, "_request", side_effect=fake_request):
+            data = await client.fetch_activity_data()
+
+        expected = {
+            "id": 1789814567000,
+            "trainingPlanId": 45489509,
+            "title": "Basis",
+            "date": today_str,
+            "sportTypeKey": "running",
+        }
+        assert data["scheduledWorkouts"] == [expected]
+        assert data["todayScheduledWorkout"] == expected
+        assert data["nextScheduledWorkout"] == expected
+        # No atpPlanId on the item, so there is no goal event to look up.
+        assert events_params == []
+        assert data["trainingPlanGoalEvent"] == {}
+
+    async def test_fetch_activity_data_goal_event_survives_fbt_first(self):
+        """The goal event's plan id comes from the first upcoming item that
+        carries an atpPlanId, not only from the next/today item.
+
+        The fbt item in the snippet quoted in #595 shows no atpPlanId. With
+        such an item today and an ATP "workout" later, the next item is the fbt
+        one; the ATP plan's goal event must still be fetched from the later
+        item.
+        """
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        today = date.today()
+        today_str = today.isoformat()
+        tomorrow_str = (today + timedelta(days=1)).isoformat()
+        fbt_today = {
+            "id": 1789814567000,
+            "trainingPlanId": 45489509,
+            "itemType": "fbtAdaptiveWorkout",
+            "title": "Basis",
+            "date": today_str,
+            "sportTypeKey": "running",
+        }
+        atp_tomorrow = {
+            "id": 1789814568000,
+            "itemType": "workout",
+            "title": "Benchmark Run",
+            "date": tomorrow_str,
+            "sportTypeKey": "running",
+            "workoutId": 111,
+            "atpPlanId": 222,
+        }
+        goal_events = [
+            {
+                "eventName": "5K Plan",
+                "date": "2026-11-21",
+                "completionTarget": {"value": 5.0, "unit": "kilometer"},
+                "eventCustomization": {"trainingPlanType": "COACH_ATP"},
+            }
+        ]
+
+        events_params: list[dict] = []
+        fake_request = self._calendar_request_router(
+            {(today.year, today.month): [atp_tomorrow, fbt_today]},
+            goal_events=goal_events,
+            events_params=events_params,
+        )
+        with patch.object(client, "_request", side_effect=fake_request):
+            data = await client.fetch_activity_data()
+
+        assert [w["title"] for w in data["scheduledWorkouts"]] == [
+            "Basis",
+            "Benchmark Run",
+        ]
+        assert data["todayScheduledWorkout"]["title"] == "Basis"
+        assert data["nextScheduledWorkout"]["title"] == "Basis"
+        assert events_params == [{"trainingPlanId": 222}]
+        assert data["trainingPlanGoalEvent"]["eventName"] == "5K Plan"
+        assert data["trainingPlanGoalEvent"]["trainingPlanType"] == "COACH_ATP"
 
     async def test_fetch_activity_data_uses_recency_not_window(self):
         """Test fetch_activity_data returns lastActivity even for old activities (#519)."""

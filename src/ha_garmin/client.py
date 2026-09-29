@@ -362,10 +362,13 @@ def _trim_activity(activity: dict[str, Any]) -> dict[str, Any]:
 
 # calendar-service's calendarItems mixes several unrelated event types under
 # `itemType` (observed: "weight" weigh-ins, "nap" sleep entries, "workout"
-# scheduled sessions) in one flat ~70-field-per-item shape, most of them
-# null for any given item type. Only "workout" items are Garmin Coach /
-# adaptive-plan sessions or self-scheduled workouts (#521); these are the
-# fields relevant to that one item type.
+# and "fbtAdaptiveWorkout" scheduled sessions) in one flat ~70-field-per-item
+# shape, most of them null for any given item type. Scheduled sessions come
+# in two item types: "workout" for self-scheduled workouts and Garmin Coach /
+# adaptive-plan sessions (#521), and "fbtAdaptiveWorkout" for Daily
+# Suggested / adaptive sessions (#595; the snippet quoted there shows a
+# trainingPlanId and no atpPlanId). These are the fields relevant to both.
+CALENDAR_WORKOUT_ITEM_TYPES = ("workout", "fbtAdaptiveWorkout")
 CALENDAR_WORKOUT_ESSENTIAL_KEYS = {
     "id",
     "date",
@@ -383,7 +386,7 @@ CALENDAR_WORKOUT_ESSENTIAL_KEYS = {
 
 
 def _trim_calendar_workout_item(item: dict[str, Any]) -> dict[str, Any]:
-    """Trim a calendarItems "workout" entry to the fields that matter."""
+    """Trim a calendarItems scheduled-session entry to the fields that matter."""
     return {k: v for k, v in item.items() if k in CALENDAR_WORKOUT_ESSENTIAL_KEYS}
 
 
@@ -2671,7 +2674,7 @@ class GarminClient:
             (
                 _trim_calendar_workout_item(item)
                 for item in calendar_items
-                if item.get("itemType") == "workout"
+                if item.get("itemType") in CALENDAR_WORKOUT_ITEM_TYPES
                 and (item.get("date") or "") >= today_str
             ),
             key=lambda w: w.get("date") or "",
@@ -2684,8 +2687,13 @@ class GarminClient:
         # The plan's own goal event (target race, distance, projected time).
         # atpPlanId (not the workout item's own trainingPlanId field, which
         # has been observed as a stale 0) is the id calendar-service/events
-        # actually wants.
-        plan_id = next_workout.get("atpPlanId") or today_workout.get("atpPlanId")
+        # actually wants. Taken from the first upcoming item that has one:
+        # the fbtAdaptiveWorkout item reported in #595 has none, so the next
+        # item alone can miss an ATP plan whose sessions come later.
+        plan_id = next(
+            (w["atpPlanId"] for w in scheduled_workouts if w.get("atpPlanId")),
+            None,
+        )
         goal_events = (
             (await self._safe_call(self.get_calendar_events_for_plan, plan_id) or [])
             if plan_id
