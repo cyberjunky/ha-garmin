@@ -67,7 +67,7 @@ def test_the_most_recent_device_wins() -> None:
     ],
 )
 def test_the_codes_that_were_swapped(code: int, phrase: str) -> None:
-    """Regression for #537; these four had no coverage when they were wrong."""
+    """Regression: these four had no coverage when they were wrong."""
     result = _add_computed_fields(
         _payload({"dev1": {"calendarDate": "2026-08-11", "trainingStatus": code}})
     )

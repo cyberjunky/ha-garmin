@@ -151,11 +151,11 @@ class TestGarminClient:
 
     async def test_fetch_activity_data_includes_scheduled_workouts(self):
         """fetch_activity_data surfaces workout-type calendar items only,
-        across this month and next (home-assistant-garmin_connect#521).
+        across this month and next.
 
         Real calendarItems mix several unrelated event types under
         `itemType` (weigh-ins, naps, workouts); only scheduled sessions
-        ("workout" here; "fbtAdaptiveWorkout" is covered below, #595) are a
+        ("workout" here; "fbtAdaptiveWorkout" is covered below) are a
         Coach / adaptive-plan session or self-scheduled workout. Past items
         and other item types must not leak through.
         """
@@ -281,18 +281,18 @@ class TestGarminClient:
 
     async def test_fetch_activity_data_includes_fbt_adaptive_workout(self):
         """A Daily Suggested / adaptive session is a scheduled workout
-        too (home-assistant-garmin_connect#595).
+        too.
 
         calendar-service reports it with itemType "fbtAdaptiveWorkout", not
-        "workout". The item below is the one quoted in the issue, with only
-        its date moved to today so the upcoming-only filter keeps it.
+        "workout". The item below is a real one, with only its date moved
+        to today so the upcoming-only filter keeps it.
         """
         auth = _make_auth()
         client = GarminClient(auth)
 
         today = date.today()
         today_str = today.isoformat()
-        issue_595_item = {
+        fbt_item = {
             "id": 1789814567000,
             "trainingPlanId": 45489509,
             "itemType": "fbtAdaptiveWorkout",
@@ -300,7 +300,7 @@ class TestGarminClient:
             "date": "2026-09-19",
             "sportTypeKey": "running",
         }
-        fbt_today = {**issue_595_item, "date": today_str}
+        fbt_today = {**fbt_item, "date": today_str}
 
         events_params: list[dict] = []
         fake_request = self._calendar_request_router(
@@ -327,7 +327,7 @@ class TestGarminClient:
         """The goal event's plan id comes from the first upcoming item that
         carries an atpPlanId, not only from the next/today item.
 
-        The fbt item in the snippet quoted in #595 shows no atpPlanId. With
+        fbtAdaptiveWorkout items have been seen without an atpPlanId. With
         such an item today and an ATP "workout" later, the next item is the fbt
         one; the ATP plan's goal event must still be fetched from the later
         item.
@@ -384,7 +384,7 @@ class TestGarminClient:
         assert data["trainingPlanGoalEvent"]["trainingPlanType"] == "COACH_ATP"
 
     async def test_fetch_activity_data_uses_recency_not_window(self):
-        """Test fetch_activity_data returns lastActivity even for old activities (#519)."""
+        """Test fetch_activity_data returns lastActivity even for old activities."""
         auth = _make_auth()
         client = GarminClient(auth)
 
@@ -419,7 +419,7 @@ class TestGarminClient:
         assert len(data["lastActivities"]) == 1
 
     async def test_fetch_activity_data_returns_more_than_ten_recent(self):
-        """lastActivities must not be capped at 10 (home-assistant-garmin_connect#567).
+        """lastActivities must not be capped at 10.
 
         A consumer that derives a rolling-7-day count from `lastActivities`
         needs the pool itself to hold more than a week's worth of activities
@@ -461,7 +461,7 @@ class TestGarminClient:
         assert len(data["lastActivities"]) == 15
 
     async def test_fetch_activity_data_merges_ebike_fields(self):
-        """Test fetch_activity_data merges e-bike fields from the summary endpoint (#527)."""
+        """Test fetch_activity_data merges e-bike fields from the summary endpoint."""
         auth = _make_auth()
         client = GarminClient(auth)
 
@@ -508,7 +508,7 @@ class TestGarminClient:
         assert "eBikeAssistModeInfoDTOList" not in data["lastActivity"]
 
     async def test_fetch_activity_data_ebike_fields_retry_after_empty_poll(self):
-        """Test an empty e-bike summary is not cached negatively forever (#527).
+        """Test an empty e-bike summary is not cached negatively forever.
 
         A new activity's summary can lag behind Garmin's backend, so the
         first poll may come back without e-bike fields even though the
@@ -612,7 +612,7 @@ class TestGarminClient:
         assert mock_summary.await_count == retry_limit
 
     async def test_get_ebike_fields_concurrent_calls_do_not_race(self):
-        """Overlapping callers must not let one clobber the other's result (#527).
+        """Overlapping callers must not let one clobber the other's result.
 
         Regression test: two callers racing on the same activity_id used to
         both see an empty cache, both fetch, and whichever wrote last (even
@@ -1035,7 +1035,7 @@ class TestGarminClient:
         assert data["avgSleepRespirationValue"] == 14.2
 
     async def test_fetch_core_data_bedtime_uses_gmt_local_delta_for_offset(self):
-        """bedtime/wake_time must not silently assume UTC+0 (home-assistant-garmin_connect#564).
+        """bedtime/wake_time must not silently assume UTC+0.
 
         Real-world payloads have been seen with no explicit timezoneOffset
         field in dailySleepDTO and no SLEEP event in
@@ -1097,9 +1097,9 @@ class TestGarminClient:
     async def test_fetch_core_data_transient_error_does_not_use_yesterday(self):
         """Test a transient 502/503 does not get papered over with yesterday's summary.
 
-        Regression test for cyberjunky/home-assistant-garmin_connect#536: a
-        transient API failure while fetching today's summary must not be
-        treated the same as "today's data isn't ready yet", or fast-changing
+        Regression test: a transient API failure while fetching today's
+        summary must not be treated the same as "today's data isn't ready
+        yet", or fast-changing
         fields like body battery briefly flip to a stale, day-old value.
         """
         auth = _make_auth()
@@ -1903,7 +1903,7 @@ class TestSecurityAuditHardening:
             await client.get_gear_defaults("1/../../admin")
 
     async def test_fetch_gear_data_includes_sensors(self):
-        """fetch_gear_data must surface paired ANT+/BLE sensors (home-assistant-garmin_connect#535)."""
+        """fetch_gear_data must surface paired ANT+/BLE sensors."""
         auth = _make_auth()
         client = GarminClient(auth)
 
@@ -1943,8 +1943,7 @@ class TestSecurityAuditHardening:
 
         The latest reading alone reflects only the moment of the last sync,
         which is way off from the day as a whole -- e.g. syncing in the
-        evening reads near 0% even on a sunny day
-        (home-assistant-garmin_connect#508).
+        evening reads near 0% even on a sunny day.
         """
         auth = _make_auth()
         client = GarminClient(auth)
