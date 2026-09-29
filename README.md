@@ -107,10 +107,10 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 
 | Method | API Calls | Data Returned |
 | ------ | --------- | ------------- |
-| `fetch_core_data()` | 3 | Steps, distance, calories, HR, stress, sleep, body battery, SPO2 |
+| `fetch_core_data()` | 3 | Steps, distance, calories, HR, stress, sleep, skin temperature change, body battery, SPO2 |
 | `fetch_body_data()` | 3 | Weight, BMI, body fat, hydration, fitness age |
-| `fetch_activity_data()` | 6+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts) |
-| `fetch_training_data()` | 7 | Training readiness, status, HRV, lactate, endurance/hill scores |
+| `fetch_activity_data()` | 6+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts, plan goal event or calendar race) |
+| `fetch_training_data()` | 8+ | Training readiness, status, VO2 Max, HRV, lactate, endurance/hill scores, power-to-weight |
 | `fetch_goals_data()` | 4 | Goals (active/future/history), badges, user level |
 | `fetch_gear_data()` | 6+ | Gear items, stats, device alarms, solar intensity (daily avg + gain), devices, last sync, paired sensors |
 | `fetch_blood_pressure_data()` | 1 | Blood pressure measurements |
@@ -153,6 +153,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | Method | Description |
 | ------ | ----------- |
 | `get_user_profile()` | User profile info |
+| `get_user_settings()` | Profile settings (`userData`, incl. VO2 Max running/cycling) |
 | `get_daily_steps()` | Steps for date range |
 | `get_body_composition()` | Weight, BMI, body fat |
 | `get_fitness_age()` | Fitness age metrics |
@@ -196,6 +197,10 @@ The library automatically adds computed fields for convenience:
 - **Weight**: `weight` (grams) → `weightKg`
 - **Stress**: `stressQualifier` → `stressQualifierText` (capitalized)
 - **Nested flattening**: HRV status, training readiness, scores
+- **VO2 Max**: training status (running, else cycling), then profile settings, then recent activities
+- **Training plan goal**: the plan's goal event, else the upcoming (primary) race on your calendar
+- **Skin temperature**: `avgSkinTempDeviationC` is the nightly change from your baseline, not an absolute temperature
+- **Sanity checks**: a `metabolicAge` that can't be an age in years is returned as `None`
 
 ## License
 
