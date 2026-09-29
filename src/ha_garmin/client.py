@@ -414,6 +414,45 @@ def _trim_goal_event(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _race_event_from_calendar(
+    calendar_items: list[dict[str, Any]], today_str: str
+) -> dict[str, Any]:
+    """Pick the upcoming race from calendarItems, as a goal event.
+
+    Races the user added to their calendar (including the Primary Race used
+    by Garmin's adaptive training) show up as itemType "event" with isRace
+    set, independent of any Garmin Coach plan. The primary race wins,
+    otherwise the soonest one. Returned in _trim_goal_event's shape so it
+    can stand in for a plan goal event; plan-only fields are None.
+    """
+    races = sorted(
+        (
+            item
+            for item in calendar_items
+            if item.get("itemType") == "event"
+            and item.get("isRace")
+            and (item.get("date") or "") >= today_str
+        ),
+        key=lambda e: (not e.get("primaryEvent"), e.get("date") or ""),
+    )
+    if not races:
+        return {}
+    race = races[0]
+    target = race.get("completionTarget") or {}
+    return {
+        "eventName": race.get("title"),
+        "date": race.get("date"),
+        "eventType": race.get("eventType"),
+        "targetDistance": target.get("value"),
+        "targetDistanceUnit": target.get("unit"),
+        "trainingPlanType": None,
+        "projectedRaceTimeDurationSeconds": None,
+        "predictedRaceTimeDurationSeconds": None,
+        "enrollmentTime": None,
+        "primaryEvent": bool(race.get("primaryEvent")),
+    }
+
+
 def _seconds_to_minutes(seconds: int | float | None) -> int | None:
     """Convert seconds to minutes, rounded to nearest integer."""
     if seconds is None:
@@ -2698,6 +2737,10 @@ class GarminClient:
             else []
         )
         goal_event = _trim_goal_event(goal_events[0]) if goal_events else {}
+        # No plan goal (no plan, or an adaptive plan without an atpPlanId):
+        # fall back to a race the user put on their calendar.
+        if not goal_event:
+            goal_event = _race_event_from_calendar(calendar_items, today_str)
 
         return {
             "lastActivities": trimmed_activities,
