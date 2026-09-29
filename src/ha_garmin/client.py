@@ -2529,8 +2529,17 @@ class GarminClient:
         wake_time = None
         optimal_wake_time = None
         avg_sleep_respiration_value = None
+        skin_temp_deviation = None
+        skin_temp_calibration_days = None
 
         if sleep_data:
+            # Skin temperature sits at the root of the sleep response, not in
+            # dailySleepDTO, and is a change from the wearer's own baseline,
+            # not an absolute temperature. Only devices with a skin
+            # temperature sensor report it.
+            if sleep_data.get("skinTempDataExists"):
+                skin_temp_deviation = sleep_data.get("avgSkinTempDeviationC")
+                skin_temp_calibration_days = sleep_data.get("skinTempCalibrationDays")
             try:
                 daily_sleep = sleep_data.get("dailySleepDTO") or {}
                 sleep_alignment = daily_sleep.get("sleepAlignment") or {}
@@ -2628,6 +2637,8 @@ class GarminClient:
             "wakeTime": wake_time,
             "optimalWakeTime": optimal_wake_time,
             "avgSleepRespirationValue": avg_sleep_respiration_value,
+            "avgSkinTempDeviationC": skin_temp_deviation,
+            "skinTempCalibrationDays": skin_temp_calibration_days,
         }
         return _add_computed_fields(data)
 

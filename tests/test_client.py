@@ -1091,7 +1091,11 @@ class TestGarminClient:
                 },
                 "sleepScores": {"overall": {"value": 85}},
                 "averageRespirationValue": 14.2,
-            }
+            },
+            "skinTempDataExists": True,
+            "avgSkinTempDeviationC": 0.2,
+            "avgSkinTempDeviationF": 0.3,
+            "skinTempCalibrationDays": 19,
         }
 
         responses = [
@@ -1129,6 +1133,8 @@ class TestGarminClient:
         assert data["wakeTime"] == datetime(2026, 4, 12, 3, 57, 47, tzinfo=UTC)
         assert data["optimalWakeTime"] == datetime(2026, 4, 13, 4, 30, tzinfo=UTC)
         assert data["avgSleepRespirationValue"] == 14.2
+        assert data["avgSkinTempDeviationC"] == 0.2
+        assert data["skinTempCalibrationDays"] == 19
 
     async def test_fetch_core_data_bedtime_uses_gmt_local_delta_for_offset(self):
         """bedtime/wake_time must not silently assume UTC+0.
@@ -1189,6 +1195,9 @@ class TestGarminClient:
         # conversion correctly lands back on 22:44 / 07:06, not 00:44 / 09:06.
         assert data["bedtime"] == gmt_start
         assert data["wakeTime"] == gmt_end
+        # No skin temperature sensor data in this payload.
+        assert data["avgSkinTempDeviationC"] is None
+        assert data["skinTempCalibrationDays"] is None
 
     async def test_fetch_core_data_transient_error_does_not_use_yesterday(self):
         """Test a transient 502/503 does not get papered over with yesterday's summary.
