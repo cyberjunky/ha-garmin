@@ -1352,6 +1352,41 @@ class TestGarminClient:
         assert result["weight"] == 86000.0
         assert result["bmi"] == 25.5
 
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (2177427894000, None),  # ms timestamp seen from a third-party scale
+            (38, 38),
+            (None, None),
+        ],
+    )
+    async def test_get_body_composition_drops_impossible_metabolic_age(
+        self, raw, expected
+    ):
+        """metabolicAge is only passed through when it can be an age in years."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        payload = {
+            "dailyWeightSummaries": [
+                {
+                    "summaryDate": "2026-04-03",
+                    "latestWeight": {
+                        "calendarDate": "2026-04-03",
+                        "weight": 87000.0,
+                        "metabolicAge": raw,
+                    },
+                },
+            ],
+        }
+
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response(payload)
+            result = await client.get_body_composition()
+
+        assert result["metabolicAge"] == expected
+        assert result["weight"] == 87000.0
+
     async def test_add_computed_fields_burned_kilocalories_computed(self):
         """Test _add_computed_fields computes burnedKilocalories from bmr+active when null."""
         from ha_garmin.client import _add_computed_fields
