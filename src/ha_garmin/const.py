@@ -7,6 +7,9 @@ GARMIN_CONNECT_API = f"{GARMIN_CONNECT}/gc-api"
 # User/Profile endpoints
 USER_PROFILE_URL = f"{GARMIN_CONNECT_API}/userprofile-service/socialProfile"
 USER_SUMMARY_URL = f"{GARMIN_CONNECT_API}/usersummary-service/usersummary/daily"
+USER_SETTINGS_URL = (
+    f"{GARMIN_CONNECT_API}/userprofile-service/userprofile/user-settings"
+)
 
 # Activity endpoints
 ACTIVITIES_URL = (

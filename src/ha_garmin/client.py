@@ -53,6 +53,7 @@ from .const import (
     TRAINING_STATUS_URL,
     UPLOAD_URL,
     USER_PROFILE_URL,
+    USER_SETTINGS_URL,
     USER_SUMMARY_URL,
     WEIGHT_LATEST_URL,
     WORKOUTS_URL,
@@ -537,6 +538,19 @@ _TRAINING_STATUS_MAP: dict[int, str] = {
 }
 
 
+def _vo2max_sport_entry(most_recent_vo2: dict[str, Any]) -> dict[str, Any]:
+    """Return the generic (running) VO2 Max entry, else the cycling one.
+
+    Garmin keeps separate estimates per sport; an account that only
+    cycles has generic set to null and only cycling filled in.
+    """
+    for sport in ("generic", "cycling"):
+        entry = most_recent_vo2.get(sport)
+        if isinstance(entry, dict) and entry.get("vo2MaxValue"):
+            return entry
+    return {}
+
+
 def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Add pre-computed fields for common unit conversions and nested extractions.
 
@@ -644,17 +658,17 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
         else:
             result["trainingStatusPhrase"] = None
         most_recent_vo2 = training_status.get("mostRecentVO2Max")
-        vo2_generic = (
-            most_recent_vo2.get("generic") or {}
+        vo2_sport = (
+            _vo2max_sport_entry(most_recent_vo2)
             if isinstance(most_recent_vo2, dict)
             else {}
         )
         result["vo2MaxValue"] = (
-            vo2_generic.get("vo2MaxValue")
+            vo2_sport.get("vo2MaxValue")
             or (most_recent_vo2 if isinstance(most_recent_vo2, (int, float)) else None)
             or training_status.get("vo2MaxValue")
         )
-        result["vo2MaxPreciseValue"] = vo2_generic.get(
+        result["vo2MaxPreciseValue"] = vo2_sport.get(
             "vo2MaxPreciseValue"
         ) or training_status.get("vo2MaxPreciseValue")
 
@@ -1128,6 +1142,11 @@ class GarminClient:
         data = await self._request("GET", USER_PROFILE_URL)
         self._profile_cache = UserProfile.model_validate(data)
         return self._profile_cache
+
+    async def get_user_settings(self) -> dict[str, Any]:
+        """Get the user's profile settings (userData holds the VO2 Max values)."""
+        data = await self._request("GET", USER_SETTINGS_URL)
+        return data if isinstance(data, dict) else {}
 
     async def get_daily_steps(
         self, start_date: date, end_date: date
@@ -2717,7 +2736,9 @@ class GarminClient:
 
         API calls: get_training_readiness, get_morning_training_readiness,
                    get_training_status, get_lactate_threshold, get_endurance_score,
-                   get_hill_score, get_hrv_data, get_power_to_weight (8 calls)
+                   get_hill_score, get_hrv_data, get_power_to_weight (8 calls),
+                   plus get_user_settings and get_activities when training
+                   status has no VO2 Max
 
         After midnight, today's training data may not be ready yet.  For fields
         that go stale (training_status, HRV, scores) we fall back to yesterday.
@@ -2737,12 +2758,7 @@ class GarminClient:
 
         # Training status — fall back to yesterday if today's is empty or has no VO2Max
         def _has_vo2max(ts: dict[str, Any] | None) -> bool:
-            return bool(
-                ts
-                and ((ts.get("mostRecentVO2Max") or {}).get("generic") or {}).get(
-                    "vo2MaxValue"
-                )
-            )
+            return bool(ts and _vo2max_sport_entry(ts.get("mostRecentVO2Max") or {}))
 
         training_status = await self._safe_call(self.get_training_status, target_date)
         if not _has_vo2max(training_status):
@@ -2797,8 +2813,15 @@ class GarminClient:
         }
         result = _add_computed_fields(data)
 
-        # Fall back to last activity's vO2MaxValue if training status has none.
-        # Some devices never populate mostRecentVO2Max in the training status API.
+        # Some devices never populate mostRecentVO2Max in the training status
+        # API. Fall back to the profile's own VO2 Max, then to the last
+        # activities' vO2MaxValue.
+        if not result.get("vo2MaxValue"):
+            user_settings = await self._safe_call(self.get_user_settings) or {}
+            user_data = user_settings.get("userData") or {}
+            result["vo2MaxValue"] = user_data.get("vo2MaxRunning") or user_data.get(
+                "vo2MaxCycling"
+            )
         if not result.get("vo2MaxValue"):
             activities = await self._safe_call(self.get_activities, 0, 10)
             if activities:
