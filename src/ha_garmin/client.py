@@ -590,6 +590,22 @@ def _vo2max_sport_entry(most_recent_vo2: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# Some third-party scale imports come back with a millisecond timestamp in
+# metabolicAge instead of an age in years.
+_METABOLIC_AGE_MAX_YEARS = 150
+
+
+def _sanitize_body_composition(measurement: dict[str, Any]) -> dict[str, Any]:
+    """Drop a metabolicAge that cannot be an age in years."""
+    metabolic_age = measurement.get("metabolicAge")
+    if metabolic_age is not None and not (
+        isinstance(metabolic_age, (int, float))
+        and 0 < metabolic_age <= _METABOLIC_AGE_MAX_YEARS
+    ):
+        return {**measurement, "metabolicAge": None}
+    return measurement
+
+
 def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     """Add pre-computed fields for common unit conversions and nested extractions.
 
@@ -1228,17 +1244,21 @@ class GarminClient:
                 default=None,
             )
             if latest:
-                return latest
+                return _sanitize_body_composition(latest)
 
         total_average = data.get("totalAverage") or {}
         if total_average.get("weight") is not None:
-            return total_average
+            return _sanitize_body_composition(total_average)
 
         # No measurement in the 30-day window; fall back to the latest
         # weigh-in regardless of age so sensors don't go blank.
         params = {"date": target_date.isoformat()}
         latest_data = await self._request("GET", WEIGHT_LATEST_URL, params=params)
-        return latest_data if isinstance(latest_data, dict) else {}
+        return (
+            _sanitize_body_composition(latest_data)
+            if isinstance(latest_data, dict)
+            else {}
+        )
 
     async def get_activities(
         self, start: int = 0, limit: int = 10
