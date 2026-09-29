@@ -23,8 +23,8 @@ ADAPTIVE_TRAINING_PLAN_URL = (
 )
 # atp-api/atp/athlete/calendar (a different API gateway, not gc-api) would
 # give the weekly workout day-markers, but wants session cookies + a CSRF
-# token this client can't currently produce -- tried and reverted
-# (home-assistant-garmin_connect#521). Not defined here for that reason;
+# token this client can't currently produce -- tried and reverted. Not
+# defined here for that reason;
 # see git history on this file if picking it back up.
 
 # Wellness endpoints

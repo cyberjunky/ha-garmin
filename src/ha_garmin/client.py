@@ -194,7 +194,7 @@ ACTIVITY_ESSENTIAL_KEYS = {
 }
 
 # E-bike fields only appear in the per-activity summary endpoint response,
-# not in the activities list response (#527); merged in fetch_activity_data.
+# not in the activities list response; merged in fetch_activity_data.
 EBIKE_ACTIVITY_KEYS = (
     "eBikeBatteryRemaining",
     "eBikeBatteryUsage",
@@ -365,8 +365,8 @@ def _trim_activity(activity: dict[str, Any]) -> dict[str, Any]:
 # and "fbtAdaptiveWorkout" scheduled sessions) in one flat ~70-field-per-item
 # shape, most of them null for any given item type. Scheduled sessions come
 # in two item types: "workout" for self-scheduled workouts and Garmin Coach /
-# adaptive-plan sessions (#521), and "fbtAdaptiveWorkout" for Daily
-# Suggested / adaptive sessions (#595). These are the fields relevant to both.
+# adaptive-plan sessions, and "fbtAdaptiveWorkout" for Daily Suggested /
+# adaptive sessions. These are the fields relevant to both.
 CALENDAR_WORKOUT_ITEM_TYPES = ("workout", "fbtAdaptiveWorkout")
 CALENDAR_WORKOUT_ESSENTIAL_KEYS = {
     "id",
@@ -489,7 +489,7 @@ def _extract_sleep_timezone_offset_minutes(
     the exact offset for that sleep session -- no guessing, and correct
     across DST transitions. The explicit timezoneOffset keys and the
     body-battery-event fallback below aren't reliably present in every
-    account's payload (home-assistant-garmin_connect#564); when they're
+    account's payload; when they're
     absent this used to silently default to 0, storing the local wall-clock
     time mislabeled as UTC and letting Home Assistant's own UTC-to-local
     display conversion double-shift it.
@@ -788,7 +788,7 @@ class GarminClient:
         # Guards the cache above: without it, two overlapping callers (e.g. an
         # overlapping coordinator refresh) can both race past the cache check,
         # and a transient failure on one can overwrite the other's good result
-        # with an empty one (home-assistant-garmin_connect#527).
+        # with an empty one.
         self._ebike_fields_lock = asyncio.Lock()
 
     def _get_url(self, url: str) -> str:
@@ -1206,7 +1206,7 @@ class GarminClient:
     # bike, not an ANT+ LEV e-bike). Below this threshold, an empty result is
     # re-fetched on the next poll instead of being cached, since Garmin's
     # backend can take a poll or two to propagate the summary fields for a
-    # brand-new activity (#527). Once the threshold is hit, the empty result
+    # brand-new activity. Once the threshold is hit, the empty result
     # is cached like a hit would be, so a normal bike doesn't pay for an
     # extra API call on every single poll forever.
     _EBIKE_FIELDS_EMPTY_RETRY_LIMIT = 3
@@ -1214,8 +1214,7 @@ class GarminClient:
     async def _get_ebike_fields(self, activity_id: int) -> dict[str, Any]:
         """Fetch e-bike fields from the activity summary endpoint.
 
-        The list endpoint never includes them (issue
-        home-assistant-garmin_connect#527). Cached per activity, so it
+        The list endpoint never includes them. Cached per activity, so it
         costs one extra API call per new ride, not per poll -- except a
         handful of retries right after a new activity appears, in case
         Garmin hasn't yet propagated the fields to the summary endpoint
@@ -1227,7 +1226,7 @@ class GarminClient:
         refreshes in flight at once) must see this call's finished result
         before deciding whether to fetch again, or a transient failure on
         the second call could overwrite the first's good result with an
-        empty one (#527).
+        empty one.
         """
         async with self._ebike_fields_lock:
             cached_empty_polls = 0
@@ -1295,7 +1294,7 @@ class GarminClient:
         """Get the training calendar for a given year and month (1-12).
 
         Both self-scheduled workouts and Garmin Coach / adaptive training
-        plan sessions appear here (home-assistant-garmin_connect#521) --
+        plan sessions appear here --
         get_workouts only has the workout library, never when (or whether)
         something is scheduled.
 
@@ -1318,7 +1317,7 @@ class GarminClient:
         """Get the user's training plans (e.g. an active Garmin Coach plan).
 
         Response shape is not verified against a real account yet --
-        exploratory, for home-assistant-garmin_connect#521.
+        exploratory.
         """
         return await self._request("GET", TRAINING_PLANS_URL)
 
@@ -1330,7 +1329,7 @@ class GarminClient:
         get_adaptive_plan_calendar and get_calendar_events_for_plan below,
         both confirmed directly from the Garmin Connect web app's own
         network calls -- kept in case it turns out to carry something
-        those don't (home-assistant-garmin_connect#521).
+        those don't.
         """
         _validate_positive_int(plan_id, "plan_id")
         url = f"{ADAPTIVE_TRAINING_PLAN_URL}/{plan_id}"
@@ -1342,8 +1341,8 @@ class GarminClient:
     ) -> list[dict[str, Any]]:
         """Get a training plan's goal event (target race, projected time).
 
-        Confirmed via the Garmin Connect web app's own network calls
-        (home-assistant-garmin_connect#521): returns the plan's own goal
+        Confirmed via the Garmin Connect web app's own network calls:
+        returns the plan's own goal
         event -- event name, target distance, target date,
         projected/predicted race time. Not the weekly workout schedule --
         that lives behind atp-api/atp/athlete/calendar, a different API
@@ -2413,7 +2412,7 @@ class GarminClient:
         # not be treated as "not ready" - otherwise a temporary Garmin
         # outage would silently overwrite all of today's data, including
         # fast-changing fields like body battery, with a full day-old
-        # snapshot (cyberjunky/home-assistant-garmin_connect#536).
+        # snapshot.
         try:
             summary_raw = await self._get_user_summary_raw(target_date)
             today_fetch_failed = False
@@ -2486,8 +2485,8 @@ class GarminClient:
                 rem_sleep_seconds = daily_sleep.get("remSleepSeconds")
                 awake_sleep_seconds = daily_sleep.get("awakeSleepSeconds")
                 nap_time_seconds = daily_sleep.get("napTimeSeconds")
-                # Only meaningful average Garmin's API exposes for respiration
-                # (home-assistant-garmin_connect#568); the summary endpoint
+                # Only meaningful average Garmin's API exposes for respiration;
+                # the summary endpoint
                 # only has day-wide latest/lowest/highest, and a client-side
                 # average from those is unreliable since the read frequency
                 # backing them varies.
@@ -2575,10 +2574,10 @@ class GarminClient:
         return _add_computed_fields(data)
 
     # How many recent activities to pull for `lastActivities`. Consumers (e.g.
-    # home-assistant-garmin_connect#567) derive a rolling-week count from this
+    # the Home Assistant integration) derive a rolling-week count from this
     # list; fetching only 10 meant that count silently pinned at 10 forever
     # for anyone averaging 10+ activities a week, since the fetch itself, not
-    # the 7-day filter, was the actual ceiling. Bumped 25 -> 50 (ha-garmin#30)
+    # the 7-day filter, was the actual ceiling. Bumped 25 -> 50
     # for the same reason at the next tier up, while staying a single bounded
     # list call.
     _RECENT_ACTIVITIES_LIMIT = 50
@@ -2591,7 +2590,7 @@ class GarminClient:
         API calls: get_activities, get_activity_details,
                    get_activity_hr_in_timezones, get_workouts,
                    get_scheduled_workouts x2 (this + next month) (6 calls),
-                   plus get_activity for rides (e-bike fields, #527), plus
+                   plus get_activity for rides (e-bike fields), plus
                    get_calendar_events_for_plan when a scheduled workout
                    carries an atpPlanId
 
@@ -2600,7 +2599,7 @@ class GarminClient:
         """
 
         # The most recent activities regardless of age (newest first), so
-        # lastActivity never goes blank after an inactive week (issue #519).
+        # lastActivity never goes blank after an inactive week.
         recent_activities = await self._safe_call(
             self.get_activities, 0, self._RECENT_ACTIVITIES_LIMIT
         )
@@ -2609,7 +2608,7 @@ class GarminClient:
             last_activity = dict(recent_activities[0])
             activity_id = last_activity.get("activityId")
 
-            # E-bike battery fields live only on the summary endpoint (#527)
+            # E-bike battery fields live only on the summary endpoint
             if activity_id is not None and _is_cycling_activity(last_activity):
                 last_activity.update(await self._get_ebike_fields(int(activity_id)))
 
@@ -2649,7 +2648,7 @@ class GarminClient:
         trimmed_last_activity = _trim_activity(last_activity) if last_activity else {}
 
         # Training calendar: Garmin Coach / adaptive-plan sessions and
-        # self-scheduled workouts (#521). Fetches this month and next so a
+        # self-scheduled workouts. Fetches this month and next so a
         # session right after a month boundary isn't missed.
         today = date.today()
         next_month = today.month + 1 if today.month < 12 else 1
@@ -2687,7 +2686,7 @@ class GarminClient:
         # atpPlanId (not the workout item's own trainingPlanId field, which
         # has been observed as a stale 0) is the id calendar-service/events
         # actually wants. Taken from the first upcoming item that has one:
-        # the fbtAdaptiveWorkout item reported in #595 has none, so the next
+        # fbtAdaptiveWorkout items have been seen without one, so the next
         # item alone can miss an ATP plan whose sessions come later.
         plan_id = next(
             (w["atpPlanId"] for w in scheduled_workouts if w.get("atpPlanId")),
@@ -2992,8 +2991,8 @@ class GarminClient:
             readings = dtos[0].get("solarInputReadings") or []
             # A single "latest" reading only reflects solar conditions at the
             # moment of the last sync, which can be way off from the day as a
-            # whole -- e.g. syncing at night reads ~0% even on a sunny day
-            # (home-assistant-garmin_connect#508). Aggregate the full day's
+            # whole -- e.g. syncing at night reads ~0% even on a sunny day.
+            # Aggregate the full day's
             # readings too, which cost nothing extra: they're already in the
             # same response.
             latest = None

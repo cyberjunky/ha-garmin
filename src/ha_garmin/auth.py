@@ -936,7 +936,7 @@ class GarminAuth:
             self._complete_mfa(mfa_code)
             # The MFA session is tied to one strategy, so there's no fall-through
             # here — but still fail loudly rather than store a token the API tier
-            # rejects (see _verify_token / issue context).
+            # rejects (see _verify_token).
             if not self._verify_token():
                 self._clear_auth_state()
                 self._clear_mfa_state()
