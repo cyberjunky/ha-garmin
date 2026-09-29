@@ -383,6 +383,102 @@ class TestGarminClient:
         assert data["trainingPlanGoalEvent"]["eventName"] == "5K Plan"
         assert data["trainingPlanGoalEvent"]["trainingPlanType"] == "COACH_ATP"
 
+    @staticmethod
+    def _race_item(title: str, day: date, primary: bool) -> dict:
+        return {
+            "itemType": "event",
+            "title": title,
+            "date": day.isoformat(),
+            "isRace": True,
+            "primaryEvent": primary,
+            "completionTarget": {
+                "value": 42195.0,
+                "unit": "meter",
+                "unitType": "distance",
+            },
+        }
+
+    async def test_fetch_activity_data_goal_event_falls_back_to_primary_race(self):
+        """Without a plan goal event, the calendar's race stands in for it.
+
+        The primary race wins over a sooner non-primary one; past races and
+        non-race events are ignored. No extra request is made.
+        """
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        today = date.today()
+        items = [
+            self._race_item("Old Race", today - timedelta(days=1), primary=True),
+            self._race_item("Parkrun", today, primary=False),
+            self._race_item("TCS Amsterdam Marathon", today + timedelta(days=2), True),
+            {**self._race_item("Club Social", today, False), "isRace": False},
+        ]
+        events_params: list[dict] = []
+        fake_request = self._calendar_request_router(
+            {(today.year, today.month): items}, events_params=events_params
+        )
+        with patch.object(client, "_request", side_effect=fake_request):
+            data = await client.fetch_activity_data()
+
+        goal = data["trainingPlanGoalEvent"]
+        assert goal["eventName"] == "TCS Amsterdam Marathon"
+        assert goal["date"] == (today + timedelta(days=2)).isoformat()
+        assert goal["targetDistance"] == 42195.0
+        assert goal["targetDistanceUnit"] == "meter"
+        assert goal["primaryEvent"] is True
+        assert goal["trainingPlanType"] is None
+        assert events_params == []
+        # Races are not scheduled workouts.
+        assert data["scheduledWorkouts"] == []
+
+    async def test_fetch_activity_data_race_fallback_soonest_without_primary(self):
+        """With no primary race, the soonest upcoming race is used."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        today = date.today()
+        items = [
+            self._race_item("Later", today + timedelta(days=3), primary=False),
+            self._race_item("Sooner", today + timedelta(days=1), primary=False),
+        ]
+        fake_request = self._calendar_request_router({(today.year, today.month): items})
+        with patch.object(client, "_request", side_effect=fake_request):
+            data = await client.fetch_activity_data()
+
+        assert data["trainingPlanGoalEvent"]["eventName"] == "Sooner"
+        assert data["trainingPlanGoalEvent"]["primaryEvent"] is False
+
+    async def test_fetch_activity_data_plan_goal_event_beats_calendar_race(self):
+        """A plan's own goal event (with projections) takes precedence."""
+        auth = _make_auth()
+        client = GarminClient(auth)
+
+        today = date.today()
+        atp_workout = {
+            "id": 1,
+            "itemType": "workout",
+            "title": "Easy Run",
+            "date": today.isoformat(),
+            "atpPlanId": 222,
+        }
+        race = self._race_item("Some Race", today + timedelta(days=1), primary=True)
+        goal_events = [
+            {
+                "eventName": "Plan Marathon",
+                "date": "2026-11-21",
+                "eventCustomization": {"trainingPlanType": "COACH_ATP"},
+            }
+        ]
+        fake_request = self._calendar_request_router(
+            {(today.year, today.month): [atp_workout, race]}, goal_events=goal_events
+        )
+        with patch.object(client, "_request", side_effect=fake_request):
+            data = await client.fetch_activity_data()
+
+        assert data["trainingPlanGoalEvent"]["eventName"] == "Plan Marathon"
+        assert "primaryEvent" not in data["trainingPlanGoalEvent"]
+
     async def test_fetch_activity_data_uses_recency_not_window(self):
         """Test fetch_activity_data returns lastActivity even for old activities."""
         auth = _make_auth()
