@@ -1322,6 +1322,95 @@ class TestGarminClient:
         assert "powerToWeight" in data
         assert data["powerToWeight"] == ptw_payload
 
+    @staticmethod
+    def _vo2_safe_call(responses: dict, calls: list[str]):
+        """Fake _safe_call answering by method name; everything else is {}."""
+
+        async def fake(func, *args, **kwargs):
+            calls.append(func.__name__)
+            return responses.get(func.__name__, {})
+
+        return fake
+
+    @pytest.mark.parametrize(
+        ("most_recent", "expected", "expected_precise"),
+        [
+            # Cycling-only account: generic is null.
+            (
+                {
+                    "generic": None,
+                    "cycling": {"vo2MaxValue": 52.0, "vo2MaxPreciseValue": 51.7},
+                },
+                52.0,
+                51.7,
+            ),
+            # Both present: generic (running) wins.
+            (
+                {
+                    "generic": {"vo2MaxValue": 36.0, "vo2MaxPreciseValue": 35.6},
+                    "cycling": {"vo2MaxValue": 52.0, "vo2MaxPreciseValue": 51.7},
+                },
+                36.0,
+                35.6,
+            ),
+        ],
+    )
+    async def test_fetch_training_data_vo2max_generic_then_cycling(
+        self, most_recent, expected, expected_precise
+    ):
+        """VO2 Max comes from generic, else cycling, without extra requests."""
+        client = GarminClient(_make_auth())
+        calls: list[str] = []
+        client._safe_call = self._vo2_safe_call(
+            {"get_training_status": {"mostRecentVO2Max": most_recent}}, calls
+        )
+
+        data = await client.fetch_training_data()
+
+        assert data["vo2MaxValue"] == expected
+        assert data["vo2MaxPreciseValue"] == expected_precise
+        assert "get_user_settings" not in calls
+        assert "get_activities" not in calls
+
+    @pytest.mark.parametrize(
+        ("user_data", "expected"),
+        [
+            ({"vo2MaxRunning": 36.0, "vo2MaxCycling": None}, 36.0),
+            ({"vo2MaxRunning": None, "vo2MaxCycling": 52.0}, 52.0),
+        ],
+    )
+    async def test_fetch_training_data_vo2max_falls_back_to_user_settings(
+        self, user_data, expected
+    ):
+        """No VO2 Max in training status: the profile's own value is used."""
+        client = GarminClient(_make_auth())
+        calls: list[str] = []
+        client._safe_call = self._vo2_safe_call(
+            {"get_user_settings": {"userData": user_data}}, calls
+        )
+
+        data = await client.fetch_training_data()
+
+        assert data["vo2MaxValue"] == expected
+        assert "get_activities" not in calls
+
+    async def test_fetch_training_data_vo2max_activities_last_resort(self):
+        """Neither training status nor profile: last activities' value."""
+        client = GarminClient(_make_auth())
+        calls: list[str] = []
+        client._safe_call = self._vo2_safe_call(
+            {
+                "get_user_settings": {"userData": {"vo2MaxRunning": None}},
+                "get_activities": [{"vO2MaxValue": None}, {"vO2MaxValue": 41.0}],
+            },
+            calls,
+        )
+
+        data = await client.fetch_training_data()
+
+        assert data["vo2MaxValue"] == 41.0
+        assert calls.index("get_user_settings") < calls.index("get_activities")
+
     async def test_fetch_training_data_power_to_weight_yesterday_fallback(self):
         """Test fetch_training_data falls back to yesterday for powerToWeight."""
         auth = _make_auth()
