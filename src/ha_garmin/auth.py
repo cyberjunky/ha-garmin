@@ -405,7 +405,8 @@ class GarminAuth:
         if rate_limited_count == len(strategies):
             raise GarminRateLimitError(
                 "All login strategies rate limited (429). "
-                "Try again later or check your IP/network."
+                "Garmin may be blocking this client or network rather than "
+                "rate limiting; try again later or from another network."
             )
         raise GarminAPIError(
             "All login strategies exhausted: "
@@ -492,7 +493,8 @@ class GarminAuth:
 
         if r.status_code == 429:
             raise GarminRateLimitError(
-                "Mobile login returned 429 — IP rate limited by Garmin"
+                "Mobile login returned 429 — rate limited or blocked by Garmin "
+                "(can be triggered by the client fingerprint, not only the IP)"
             )
 
         try:
