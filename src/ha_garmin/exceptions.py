@@ -34,3 +34,13 @@ class GarminAPIError(GarminConnectError):
         """Initialize API error."""
         super().__init__(message)
         self.status_code = status_code
+
+
+class GarminTLSError(GarminConnectError):
+    """The TLS certificate presented for a Garmin host could not be verified.
+
+    Garmin serves publicly trusted certificates, so this means the connection
+    is being intercepted or redirected (proxy, HTTPS inspection, DNS filter).
+    Deliberately not a GarminAPIError: every other endpoint on the host fails
+    the same way, so it has to abort a fetch instead of being skipped per call.
+    """
