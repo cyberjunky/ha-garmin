@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 
 from ha_garmin import GarminAuth, GarminClient
-from ha_garmin.exceptions import GarminAPIError, GarminAuthError
+from ha_garmin.const import GARMIN_CONNECT_API
+from ha_garmin.exceptions import GarminAPIError, GarminAuthError, GarminTLSError
 
 
 def _make_auth(di_token: str = "fake_di_token") -> GarminAuth:
@@ -1299,6 +1300,61 @@ class TestGarminClient:
             result = await client._request("GET", "https://connectapi.garmin.com/test")
 
         assert result == {}
+
+    async def test_request_raises_tls_error_on_untrusted_certificate(self):
+        """A failed certificate check means interception, not a flaky endpoint."""
+        import ssl
+
+        import requests
+        from urllib3.exceptions import MaxRetryError
+        from urllib3.exceptions import SSLError as Urllib3SSLError
+
+        client = GarminClient(_make_auth(), is_cn=True)
+        cert_err = ssl.SSLCertVerificationError(
+            1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+        )
+        cert_err.verify_message = "self-signed certificate"
+        wrapped = requests.exceptions.SSLError(
+            MaxRetryError(MagicMock(), "/test", Urllib3SSLError(cert_err))
+        )
+
+        with (
+            patch("asyncio.to_thread", new_callable=AsyncMock, side_effect=wrapped),
+            pytest.raises(GarminTLSError) as excinfo,
+        ):
+            await client._request("GET", f"{GARMIN_CONNECT_API}/test")
+
+        message = str(excinfo.value)
+        assert "connectapi.garmin.cn" in message
+        assert "self-signed certificate" in message
+        assert not isinstance(excinfo.value, GarminAPIError)
+
+    async def test_request_keeps_api_error_for_other_ssl_failures(self):
+        """A dropped handshake is transient; only certificate failures abort."""
+        import ssl
+
+        import requests
+
+        client = GarminClient(_make_auth())
+        wrapped = requests.exceptions.SSLError(
+            ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred")
+        )
+
+        with (
+            patch("asyncio.to_thread", new_callable=AsyncMock, side_effect=wrapped),
+            pytest.raises(GarminAPIError, match="Request failed"),
+        ):
+            await client._request("GET", f"{GARMIN_CONNECT_API}/test")
+
+    async def test_safe_call_does_not_swallow_tls_error(self):
+        """_safe_call skips a failing endpoint, but a TLS failure ends the fetch."""
+        client = GarminClient(_make_auth())
+
+        async def failing() -> None:
+            raise GarminTLSError("intercepted")
+
+        with pytest.raises(GarminTLSError):
+            await client._safe_call(failing)
 
     async def test_get_body_composition_uses_daily_weight_summaries(self):
         """Test get_body_composition returns latest weight from dailyWeightSummaries."""

@@ -7,6 +7,7 @@ from .exceptions import (
     GarminConnectError,
     GarminMFARequired,
     GarminRateLimitError,
+    GarminTLSError,
 )
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "GarminConnectError",
     "GarminMFARequired",
     "GarminRateLimitError",
+    "GarminTLSError",
 ]
 
 __version__ = "0.1.0"

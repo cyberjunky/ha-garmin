@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import ssl
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote, urlsplit
@@ -58,11 +59,45 @@ from .const import (
     WEIGHT_LATEST_URL,
     WORKOUTS_URL,
 )
-from .exceptions import GarminAPIError, GarminAuthError, GarminRateLimitError
+from .exceptions import (
+    GarminAPIError,
+    GarminAuthError,
+    GarminRateLimitError,
+    GarminTLSError,
+)
 from .models import UserProfile
 
 if TYPE_CHECKING:
     from .auth import GarminAuth
+
+
+def _cert_verification_failure(err: BaseException) -> str | None:
+    """Return why certificate verification failed, or None for any other error.
+
+    requests wraps the ssl error several layers deep (SSLError -> MaxRetryError
+    -> urllib3 SSLError -> ssl.SSLCertVerificationError), linked through
+    ``__cause__``, ``reason`` or ``args`` depending on the layer.
+    """
+    seen: set[int] = set()
+    pending: list[Any] = [err]
+    while pending:
+        current = pending.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return current.verify_message or "certificate verify failed"
+        pending.extend(
+            (
+                current.__cause__,
+                current.__context__,
+                getattr(current, "reason", None),
+                *current.args,
+            )
+        )
+    if "CERTIFICATE_VERIFY_FAILED" in str(err):
+        return "certificate verify failed"
+    return None
 
 
 def _validate_positive_int(value: Any, name: str) -> int:
@@ -1005,6 +1040,14 @@ class GarminClient:
             raise
         except Exception as err:
             _LOGGER.debug("Request to %s failed: %s", url, err)
+            if (reason := _cert_verification_failure(err)) is not None:
+                host = urlsplit(url).hostname
+                raise GarminTLSError(
+                    f"TLS certificate for {host} could not be verified ({reason}). "
+                    "The connection to Garmin is being intercepted or redirected "
+                    "by a proxy, HTTPS inspection or DNS filter on this network; "
+                    f"exclude {host} from it"
+                ) from err
             raise GarminAPIError(f"Request failed: {err}") from err
 
     async def _request_bytes(self, url: str) -> bytes:
