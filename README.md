@@ -161,6 +161,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_activities()` | Most recent activities (newest first, no date filter) |
 | `get_activity(activity_id)` | Single activity summary (includes e-bike fields) |
 | `get_activity_details()` | Detailed activity with polyline |
+| `get_activity_connect_iq_display_info()` | Field definitions of the Connect IQ apps used in an activity; values are in `get_activity()['connectIQMeasurements']`, joined by `fetch_activity_data()` into `lastActivity['connectIQFields']` |
 | `get_activity_hr_in_timezones()` | HR time in zones |
 | `download_activity(activity_id, file_format)` | Download activity file (fit/original/tcx/gpx/kml/csv) |
 | `get_workouts()` | Workout library (created/saved workouts, not when scheduled) |
