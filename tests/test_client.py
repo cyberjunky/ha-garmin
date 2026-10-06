@@ -27,6 +27,88 @@ def _mock_response(payload: object, status: int = 200) -> MagicMock:
     return resp
 
 
+# Connect IQ payloads as reported for an indoor rowing session recorded
+# with the FTMSRowing app (chart-only fields and other locales omitted).
+_CIQ_APP = "f201a31a-79c2-4f81-b4be-28a80603132e"
+_CIQ_MEASUREMENTS = [
+    {"appID": _CIQ_APP, "developerFieldNumber": 10, "value": "FIT-RW-"},
+    {"appID": _CIQ_APP, "developerFieldNumber": 14, "value": "491.0"},
+    {"appID": _CIQ_APP, "developerFieldNumber": 16, "value": "30.0"},
+    {"appID": _CIQ_APP, "developerFieldNumber": 18, "value": "17.0"},
+    {"appID": _CIQ_APP, "developerFieldNumber": 11, "value": "2946.0"},
+    {"appID": _CIQ_APP, "developerFieldNumber": 12, "value": "2.946000099182129"},
+]
+_CIQ_DISPLAY_INFO = [
+    {
+        "appId": _CIQ_APP,
+        "name": "FTMSRowing",
+        "developerDisplayName": "Jeff_Crystal",
+        "fitContributionsJSON": {
+            "datafields": [
+                {
+                    "id": 10,
+                    "label-key": "machine_name_label",
+                    "unit-label-key": "none_units",
+                    "sort-order": 10,
+                    "precision": 0,
+                },
+                {
+                    "id": 11,
+                    "label-key": "CellDistanceMeters",
+                    "unit-label-key": "distance_meters_units",
+                    "sort-order": 11,
+                    "precision": 0,
+                },
+                {
+                    "id": 12,
+                    "label-key": "total_distance_label",
+                    "unit-label-key": "distance_km_units",
+                    "sort-order": 12,
+                    "precision": 2,
+                },
+                {
+                    "id": 14,
+                    "label-key": "total_strokes_label",
+                    "unit-label-key": "strokes_units",
+                    "sort-order": 14,
+                    "precision": 0,
+                },
+                {
+                    "id": 16,
+                    "label-key": "CellPkSPM",
+                    "unit-label-key": "strokes_units",
+                    "sort-order": 16,
+                    "precision": 0,
+                },
+                {
+                    "id": 18,
+                    "label-key": "peak_power_label",
+                    "unit-label-key": "power_units",
+                    "sort-order": 18,
+                    "precision": 0,
+                },
+            ],
+            "strings": {
+                "default": {
+                    "machine_name_label": "Machine",
+                    "none_units": " ",
+                    "CellDistanceMeters": "Distance (Meters)",
+                    "distance_meters_units": "m",
+                    "total_distance_label": "Distance",
+                    "distance_km_units": "Km",
+                    "total_strokes_label": "Total Strokes",
+                    "strokes_units": "Strokes",
+                    "CellPkSPM": "Peak Stroke Rate",
+                    "peak_power_label": "Peak Power",
+                    "power_units": "W",
+                },
+                "de-DE": {"machine_name_label": "Gerät"},
+            },
+        },
+    }
+]
+
+
 class TestGarminClient:
     """Tests for GarminClient class."""
 
@@ -495,6 +577,15 @@ class TestGarminClient:
         with (
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
+                client,
+                "get_activity_connect_iq_display_info",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch.object(
+                client, "get_activity", new_callable=AsyncMock, return_value={}
+            ),
+            patch.object(
                 client, "get_workouts", new_callable=AsyncMock
             ) as mock_workouts,
             patch.object(
@@ -539,6 +630,15 @@ class TestGarminClient:
         with (
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
+                client,
+                "get_activity_connect_iq_display_info",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch.object(
+                client, "get_activity", new_callable=AsyncMock, return_value={}
+            ),
+            patch.object(
                 client, "get_workouts", new_callable=AsyncMock
             ) as mock_workouts,
             patch.object(
@@ -577,6 +677,12 @@ class TestGarminClient:
 
         with (
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client,
+                "get_activity_connect_iq_display_info",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
             patch.object(
                 client, "get_activity", new_callable=AsyncMock
             ) as mock_summary,
@@ -632,6 +738,12 @@ class TestGarminClient:
         with (
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
+                client,
+                "get_activity_connect_iq_display_info",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
+            patch.object(
                 client, "get_activity", new_callable=AsyncMock
             ) as mock_summary,
             patch.object(
@@ -681,6 +793,12 @@ class TestGarminClient:
 
         with (
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client,
+                "get_activity_connect_iq_display_info",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
             patch.object(
                 client, "get_activity", new_callable=AsyncMock
             ) as mock_summary,
@@ -750,8 +868,142 @@ class TestGarminClient:
         assert results[0] == expected
         assert results[1] == expected
 
-    async def test_fetch_activity_data_skips_summary_for_non_rides(self):
-        """Test fetch_activity_data does not fetch the summary for non-ride activities."""
+    async def test_fetch_activity_data_merges_connect_iq_fields(self):
+        """Connect IQ values (summary) joined with their definitions (display info)."""
+        client = GarminClient(_make_auth())
+        row = {
+            "activityId": 11,
+            "activityName": "Indoor Rowing",
+            "activityType": {"typeKey": "indoor_rowing"},
+            "hasPolyline": False,
+        }
+        summary = {"activityId": 11, "connectIQMeasurements": _CIQ_MEASUREMENTS}
+
+        with (
+            patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client, "get_activity", new_callable=AsyncMock
+            ) as mock_summary,
+            patch.object(
+                client, "get_activity_connect_iq_display_info", new_callable=AsyncMock
+            ) as mock_info,
+            patch.object(
+                client, "get_workouts", new_callable=AsyncMock
+            ) as mock_workouts,
+            patch.object(
+                client, "get_activity_hr_in_timezones", new_callable=AsyncMock
+            ) as mock_hr,
+            patch.object(
+                client, "get_scheduled_workouts", new_callable=AsyncMock
+            ) as mock_calendar,
+        ):
+            mock_acts.return_value = [row]
+            mock_summary.return_value = summary
+            mock_info.return_value = _CIQ_DISPLAY_INFO
+            mock_workouts.return_value = []
+            mock_hr.return_value = []
+            mock_calendar.return_value = {}
+            first = await client.fetch_activity_data()
+            second = await client.fetch_activity_data()
+
+        # One call each per new activity, not per poll
+        mock_summary.assert_awaited_once_with(11)
+        mock_info.assert_awaited_once_with(11)
+        fields = first["lastActivity"]["connectIQFields"]
+        assert second["lastActivity"]["connectIQFields"] == fields
+        assert [f["field"] for f in fields] == [
+            "Machine",
+            "Distance (Meters)",
+            "Distance",
+            "Total Strokes",
+            "Peak Stroke Rate",
+            "Peak Power",
+        ]
+        assert fields[0] == {
+            "app": "FTMSRowing",
+            "field": "Machine",
+            "value": "FIT-RW-",
+            "unit": None,
+            "developerFieldNumber": 10,
+        }
+        assert fields[1]["value"] == 2946
+        assert fields[1]["unit"] == "m"
+        assert fields[2]["value"] == 2.95  # precision 2
+        assert fields[2]["unit"] == "Km"
+        assert fields[3]["value"] == 491
+        assert fields[3]["unit"] == "Strokes"
+        # Raw measurements are not leaked, and list rows stay trimmed
+        assert "connectIQMeasurements" not in first["lastActivity"]
+        assert "connectIQFields" not in first["lastActivities"][0]
+
+    async def test_fetch_activity_data_omits_connect_iq_when_none(self):
+        """No measurements: no attribute and the display info is never fetched."""
+        client = GarminClient(_make_auth())
+        walk = {
+            "activityId": 12,
+            "activityName": "Walk",
+            "activityType": {"typeKey": "walking"},
+            "hasPolyline": False,
+        }
+
+        with (
+            patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client, "get_activity", new_callable=AsyncMock
+            ) as mock_summary,
+            patch.object(
+                client, "get_activity_connect_iq_display_info", new_callable=AsyncMock
+            ) as mock_info,
+            patch.object(
+                client, "get_workouts", new_callable=AsyncMock
+            ) as mock_workouts,
+            patch.object(
+                client, "get_activity_hr_in_timezones", new_callable=AsyncMock
+            ) as mock_hr,
+            patch.object(
+                client, "get_scheduled_workouts", new_callable=AsyncMock
+            ) as mock_calendar,
+        ):
+            mock_acts.return_value = [walk]
+            mock_summary.return_value = {"activityId": 12, "connectIQMeasurements": []}
+            mock_workouts.return_value = []
+            mock_hr.return_value = []
+            mock_calendar.return_value = {}
+            retry_limit = client._EBIKE_FIELDS_EMPTY_RETRY_LIMIT
+            for _ in range(retry_limit + 3):
+                data = await client.fetch_activity_data()
+
+        assert "connectIQFields" not in data["lastActivity"]
+        mock_info.assert_not_awaited()
+        # An empty summary is retried a bounded number of polls, then cached
+        assert mock_summary.await_count == retry_limit
+
+    async def test_get_activity_connect_iq_display_info_returns_list_only(self):
+        """A non-list body (404 -> {}) becomes an empty list."""
+        client = GarminClient(_make_auth())
+        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
+            mock_thread.return_value = _mock_response({}, status=404)
+            assert await client.get_activity_connect_iq_display_info(5) == []
+
+    def test_merge_connect_iq_fields_without_definitions(self):
+        """Values whose app or field has no definition keep a generic name."""
+        from ha_garmin.client import _merge_connect_iq_fields
+
+        fields = _merge_connect_iq_fields(
+            [{"appID": "app-x", "developerFieldNumber": 3, "value": "12.5"}], []
+        )
+        assert fields == [
+            {
+                "app": "app-x",
+                "field": "field_3",
+                "value": 12.5,
+                "unit": None,
+                "developerFieldNumber": 3,
+            }
+        ]
+
+    async def test_fetch_activity_data_ignores_ebike_fields_for_non_rides(self):
+        """The summary is fetched for every activity (Connect IQ), e-bike keys only for rides."""
         auth = _make_auth()
         client = GarminClient(auth)
 
@@ -764,6 +1016,12 @@ class TestGarminClient:
 
         with (
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
+            patch.object(
+                client,
+                "get_activity_connect_iq_display_info",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
             patch.object(
                 client, "get_activity", new_callable=AsyncMock
             ) as mock_summary,
@@ -778,12 +1036,13 @@ class TestGarminClient:
             ) as mock_calendar,
         ):
             mock_acts.return_value = [run]
+            mock_summary.return_value = {"activityId": 8, "eBikeBatteryRemaining": 42}
             mock_workouts.return_value = []
             mock_hr.return_value = []
             mock_calendar.return_value = {}
             data = await client.fetch_activity_data()
 
-        mock_summary.assert_not_awaited()
+        mock_summary.assert_awaited_once_with(8)
         assert "eBikeBatteryRemaining" not in data["lastActivity"]
 
     def test_is_cycling_activity(self):

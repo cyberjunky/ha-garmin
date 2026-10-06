@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import UTC, date, datetime, timedelta
@@ -63,6 +64,122 @@ from .models import UserProfile
 
 if TYPE_CHECKING:
     from .auth import GarminAuth
+
+
+def _parse_connect_iq_value(raw: Any, precision: Any) -> Any:
+    """Turn a Connect IQ measurement value into a number when it is one.
+
+    Garmin sends every value as a string ("491.0", "FIT-RW-"); numbers
+    are rounded to the field's declared precision.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if isinstance(precision, int) and precision >= 0:
+        number = round(number, precision)
+    return int(number) if number.is_integer() else number
+
+
+def _merge_connect_iq_fields(
+    measurements: list[Any] | None, display_info: list[Any] | None
+) -> list[dict[str, Any]]:
+    """Join Connect IQ values with the field definitions of their app.
+
+    ``connectIQMeasurements`` (activity summary) carries app id, developer
+    field number and a string value. ``connectIQDisplayInfo`` carries, per
+    app, the field definitions (label/unit keys, precision, sort order)
+    and the strings those keys resolve to. A value whose definition is
+    missing is kept with a generic field name rather than dropped.
+    """
+    apps: dict[str, str] = {}
+    definitions: dict[tuple[str, int], dict[str, Any]] = {}
+    for app in display_info or []:
+        if not isinstance(app, dict):
+            continue
+        app_id = app.get("appId") or app.get("appID")
+        if not app_id:
+            continue
+        apps[app_id] = app.get("name") or app_id
+        contributions = app.get("fitContributionsJSON") or {}
+        if isinstance(contributions, str):
+            try:
+                contributions = json.loads(contributions)
+            except ValueError:
+                contributions = {}
+        strings = (contributions.get("strings") or {}).get("default") or {}
+        for datafield in contributions.get("datafields") or []:
+            if not isinstance(datafield, dict) or datafield.get("id") is None:
+                continue
+            label_key = datafield.get("label-key") or ""
+            unit_key = datafield.get("unit-label-key") or ""
+            definitions[(app_id, int(datafield["id"]))] = {
+                "field": strings.get(label_key) or label_key or None,
+                "unit": (strings.get(unit_key) or "").strip() or None,
+                "precision": datafield.get("precision"),
+                "sort": datafield.get("sort-order"),
+            }
+
+    fields: list[tuple[Any, dict[str, Any]]] = []
+    for measurement in measurements or []:
+        if not isinstance(measurement, dict):
+            continue
+        app_id = measurement.get("appID") or measurement.get("appId")
+        number = measurement.get("developerFieldNumber")
+        if not app_id or number is None:
+            continue
+        number = int(number)
+        definition = definitions.get((app_id, number), {})
+        fields.append(
+            (
+                (apps.get(app_id, app_id), definition.get("sort") or number),
+                {
+                    "app": apps.get(app_id, app_id),
+                    "field": definition.get("field") or f"field_{number}",
+                    "value": _parse_connect_iq_value(
+                        measurement.get("value"), definition.get("precision")
+                    ),
+                    "unit": definition.get("unit"),
+                    "developerFieldNumber": number,
+                },
+            )
+        )
+    return [field for _, field in sorted(fields, key=lambda item: item[0])]
+
+
+class _PerActivityCache:
+    """Cache one per-activity lookup for the current last activity.
+
+    An empty result is retried on the next ``empty_retry_limit`` polls
+    before it is cached too: Garmin's backend can take a poll or two to
+    propagate per-activity data after an upload, but an activity that
+    genuinely has none must not cost an extra API call on every poll.
+
+    Locked end-to-end so an overlapping caller (two coordinator refreshes
+    in flight) sees the finished result instead of re-fetching, where a
+    transient failure on the second call could overwrite a good result.
+    """
+
+    def __init__(self, empty_retry_limit: int) -> None:
+        self._empty_retry_limit = empty_retry_limit
+        self._lock = asyncio.Lock()
+        # (activity_id, value, consecutive_empty_polls)
+        self._entry: tuple[int, Any, int] | None = None
+
+    async def get(self, activity_id: int, fetch: Any) -> Any:
+        """Return the cached value for ``activity_id`` or fetch and cache it."""
+        async with self._lock:
+            empty_polls = 0
+            if self._entry is not None and self._entry[0] == activity_id:
+                _, value, empty_polls = self._entry
+                if value or empty_polls >= self._empty_retry_limit:
+                    return value
+            value = await fetch(activity_id)
+            self._entry = (activity_id, value, 0 if value else empty_polls + 1)
+            return value
 
 
 def _validate_positive_int(value: Any, name: str) -> int:
@@ -153,6 +270,8 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "activityType",
     # Polyline/GPS (for map display)
     "hasPolyline",
+    # Connect IQ data fields, merged in fetch_activity_data
+    "connectIQFields",
     "polyline",
     # VO2Max (from activity record)
     "vO2MaxValue",
@@ -852,13 +971,11 @@ class GarminClient:
         self._is_cn = is_cn
         self._base_url = GARMIN_CN_CONNECT_API if is_cn else GARMIN_CONNECT_API
         self._profile_cache: UserProfile | None = None
-        # (activity_id, fields, consecutive_empty_polls)
-        self._ebike_fields_cache: tuple[int, dict[str, Any], int] | None = None
-        # Guards the cache above: without it, two overlapping callers (e.g. an
-        # overlapping coordinator refresh) can both race past the cache check,
-        # and a transient failure on one can overwrite the other's good result
-        # with an empty one.
-        self._ebike_fields_lock = asyncio.Lock()
+        # Per-activity lookups that only need one API call per new activity.
+        self._summary_fields_cache = _PerActivityCache(
+            self._EBIKE_FIELDS_EMPTY_RETRY_LIMIT
+        )
+        self._connect_iq_cache = _PerActivityCache(self._EBIKE_FIELDS_EMPTY_RETRY_LIMIT)
 
     def _get_url(self, url: str) -> str:
         """Resolve URL to correct connectapi domain."""
@@ -1289,37 +1406,15 @@ class GarminClient:
     # extra API call on every single poll forever.
     _EBIKE_FIELDS_EMPTY_RETRY_LIMIT = 3
 
-    async def _get_ebike_fields(self, activity_id: int) -> dict[str, Any]:
-        """Fetch e-bike fields from the activity summary endpoint.
+    async def _get_summary_fields(self, activity_id: int) -> dict[str, Any]:
+        """Per-activity fields that only the summary endpoint carries.
 
-        The list endpoint never includes them. Cached per activity, so it
-        costs one extra API call per new ride, not per poll -- except a
-        handful of retries right after a new activity appears, in case
-        Garmin hasn't yet propagated the fields to the summary endpoint
-        (see _EBIKE_FIELDS_EMPTY_RETRY_LIMIT). An empty result is never
-        cached indefinitely on the first miss, so a slow backend doesn't
-        permanently poison the cache for that activity.
-
-        Locked end-to-end: an overlapping caller (e.g. two coordinator
-        refreshes in flight at once) must see this call's finished result
-        before deciding whether to fetch again, or a transient failure on
-        the second call could overwrite the first's good result with an
-        empty one.
+        E-bike (ANT+ LEV) fields and Connect IQ measurements (developer
+        fields written by Connect IQ apps) never appear in the activities
+        list. One call per new activity, cached (see _PerActivityCache).
         """
-        async with self._ebike_fields_lock:
-            cached_empty_polls = 0
-            if (
-                self._ebike_fields_cache is not None
-                and self._ebike_fields_cache[0] == activity_id
-            ):
-                cached_fields = self._ebike_fields_cache[1]
-                cached_empty_polls = self._ebike_fields_cache[2]
-                if (
-                    cached_fields
-                    or cached_empty_polls >= self._EBIKE_FIELDS_EMPTY_RETRY_LIMIT
-                ):
-                    return cached_fields
 
+        async def _fetch(activity_id: int) -> dict[str, Any]:
             summary = await self._safe_call(self.get_activity, activity_id) or {}
             # Fields have been observed at the top level; check summaryDTO too
             source = {**(summary.get("summaryDTO") or {}), **summary}
@@ -1328,9 +1423,47 @@ class GarminClient:
                 for key in EBIKE_ACTIVITY_KEYS
                 if source.get(key) is not None
             }
-            empty_polls = 0 if fields else cached_empty_polls + 1
-            self._ebike_fields_cache = (activity_id, fields, empty_polls)
+            if source.get("connectIQMeasurements"):
+                fields["connectIQMeasurements"] = source["connectIQMeasurements"]
             return fields
+
+        return await self._summary_fields_cache.get(activity_id, _fetch)
+
+    async def _get_ebike_fields(self, activity_id: int) -> dict[str, Any]:
+        """E-bike fields of an activity (see _get_summary_fields)."""
+        fields = await self._get_summary_fields(activity_id)
+        return {key: fields[key] for key in EBIKE_ACTIVITY_KEYS if key in fields}
+
+    async def get_activity_connect_iq_display_info(self, activity_id: int) -> list[Any]:
+        """Get the Connect IQ field definitions used in an activity.
+
+        One entry per Connect IQ app, with its data field definitions
+        (label and unit keys, precision, sort order) and the strings those
+        keys resolve to. The values themselves are in
+        ``get_activity()["connectIQMeasurements"]``; fetch_activity_data
+        joins the two into ``lastActivity["connectIQFields"]``. Returns an
+        empty list for activities without Connect IQ fields.
+        """
+        _validate_positive_int(activity_id, "activity_id")
+        url = f"{ACTIVITY_DETAILS_URL}/{activity_id}/connectIQDisplayInfo"
+        data = await self._request("GET", url)
+        return data if isinstance(data, list) else []
+
+    async def _get_connect_iq_fields(
+        self, activity_id: int, measurements: list[Any]
+    ) -> list[dict[str, Any]]:
+        """Resolved Connect IQ fields; the definitions cost one call per activity."""
+
+        async def _fetch(activity_id: int) -> list[Any]:
+            return (
+                await self._safe_call(
+                    self.get_activity_connect_iq_display_info, activity_id
+                )
+                or []
+            )
+
+        display_info = await self._connect_iq_cache.get(activity_id, _fetch)
+        return _merge_connect_iq_fields(measurements, display_info)
 
     async def get_activity_details(
         self, activity_id: int, max_chart_size: int = 100, max_poly_size: int = 4000
@@ -2679,7 +2812,9 @@ class GarminClient:
         API calls: get_activities, get_activity_details,
                    get_activity_hr_in_timezones, get_workouts,
                    get_scheduled_workouts x2 (this + next month) (6 calls),
-                   plus get_activity for rides (e-bike fields), plus
+                   plus get_activity once per new activity (e-bike fields,
+                   Connect IQ measurements) and
+                   get_activity_connect_iq_display_info when it has any, plus
                    get_calendar_events_for_plan when a scheduled workout
                    carries an atpPlanId
 
@@ -2697,9 +2832,26 @@ class GarminClient:
             last_activity = dict(recent_activities[0])
             activity_id = last_activity.get("activityId")
 
-            # E-bike battery fields live only on the summary endpoint
-            if activity_id is not None and _is_cycling_activity(last_activity):
-                last_activity.update(await self._get_ebike_fields(int(activity_id)))
+            # E-bike fields and Connect IQ measurements live only on the
+            # summary endpoint, one call per new activity. The list carries
+            # no hint of either, so every new activity is checked once.
+            if activity_id is not None:
+                summary_fields = await self._get_summary_fields(int(activity_id))
+                if _is_cycling_activity(last_activity):
+                    last_activity.update(
+                        {
+                            k: v
+                            for k, v in summary_fields.items()
+                            if k in EBIKE_ACTIVITY_KEYS
+                        }
+                    )
+                measurements = summary_fields.get("connectIQMeasurements")
+                if measurements:
+                    last_activity[
+                        "connectIQFields"
+                    ] = await self._get_connect_iq_fields(
+                        int(activity_id), measurements
+                    )
 
             # Fetch polyline
             if last_activity.get("hasPolyline") and activity_id is not None:
