@@ -315,6 +315,9 @@ class TestGarminClient:
             patch.object(
                 client, "get_upcoming_events", new_callable=AsyncMock
             ) as mock_goal,
+            patch.object(
+                client, "get_workout", new_callable=AsyncMock, return_value={}
+            ),
         ):
             mock_acts.return_value = []
             mock_workouts.return_value = []
@@ -3227,6 +3230,9 @@ class TestCalendarDedup:
             patch.object(
                 client, "get_upcoming_events", new_callable=AsyncMock, return_value=[]
             ),
+            patch.object(
+                client, "get_workout", new_callable=AsyncMock, return_value={}
+            ),
         ):
             data = await client.fetch_activity_data()
 
@@ -3256,3 +3262,182 @@ class TestSlowCache:
         fetch = AsyncMock(side_effect=[GarminAPIError("boom"), {"ok": True}])
         assert await client._cached_safe_call("k", fetch) is None
         assert await client._cached_safe_call("k", fetch) == {"ok": True}
+
+
+class TestScheduledWorkoutSteps:
+    """Today's and the next scheduled workout carry their steps and targets."""
+
+    # Shape from a Final Surge workout synced to Garmin (issue #627), plus a
+    # repeat group as Garmin stores intervals.
+    _WORKOUT = {
+        "workoutId": 1731319876,
+        "workoutName": "Easy 3 miles",
+        "estimatedDistanceInMeters": 4828.02,
+        "estimatedDurationInSecs": None,
+        "workoutProvider": "FinalSurge",
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "sportType": {"sportTypeKey": "running"},
+                "workoutSteps": [
+                    {
+                        "type": "ExecutableStepDTO",
+                        "stepOrder": 1,
+                        "stepType": {"stepTypeKey": "interval"},
+                        "endCondition": {"conditionTypeKey": "distance"},
+                        "endConditionValue": 4828.02000001,
+                        "targetType": {"workoutTargetTypeKey": "heart.rate.zone"},
+                        "targetValueOne": 141.0,
+                        "targetValueTwo": 159.0,
+                        "zoneNumber": None,
+                        "description": None,
+                    },
+                    {
+                        "type": "RepeatGroupDTO",
+                        "stepOrder": 2,
+                        "numberOfIterations": 4,
+                        "workoutSteps": [
+                            {
+                                "type": "ExecutableStepDTO",
+                                "stepOrder": 3,
+                                "stepType": {"stepTypeKey": "interval"},
+                                "endCondition": {"conditionTypeKey": "time"},
+                                "endConditionValue": 60.0,
+                                "targetType": {"workoutTargetTypeKey": "pace.zone"},
+                                "targetValueOne": 3.7037037,
+                                "targetValueTwo": 3.3333333,
+                            },
+                            {
+                                "type": "ExecutableStepDTO",
+                                "stepOrder": 4,
+                                "stepType": {"stepTypeKey": "recovery"},
+                                "endCondition": {"conditionTypeKey": "lap.button"},
+                                "targetType": {"workoutTargetTypeKey": "no.target"},
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+
+    def test_detail_fields_flatten_steps_and_keep_repeats_nested(self):
+        from ha_garmin.client import _workout_detail_fields
+
+        assert _workout_detail_fields(self._WORKOUT) == {
+            "estimatedDistanceInMeters": 4828.02,
+            "workoutProvider": "FinalSurge",
+            "workoutSteps": [
+                {
+                    "stepOrder": 1,
+                    "stepType": "interval",
+                    "endCondition": "distance",
+                    "endConditionValue": 4828.02,
+                    "targetType": "heart.rate.zone",
+                    "targetValueOne": 141.0,
+                    "targetValueTwo": 159.0,
+                },
+                {
+                    "stepOrder": 2,
+                    "stepType": "repeat",
+                    "numberOfIterations": 4,
+                    "steps": [
+                        {
+                            "stepOrder": 3,
+                            "stepType": "interval",
+                            "endCondition": "time",
+                            "endConditionValue": 60.0,
+                            "targetType": "pace.zone",
+                            "targetValueOne": 3.7,
+                            "targetValueTwo": 3.33,
+                        },
+                        {
+                            "stepOrder": 4,
+                            "stepType": "recovery",
+                            "endCondition": "lap.button",
+                            "targetType": "no.target",
+                        },
+                    ],
+                },
+            ],
+        }
+
+    def test_multisport_steps_carry_their_sport(self):
+        from ha_garmin.client import _workout_detail_fields
+
+        step = {"stepOrder": 1, "stepType": {"stepTypeKey": "interval"}}
+        workout = {
+            "workoutSegments": [
+                {"sportType": {"sportTypeKey": "swimming"}, "workoutSteps": [step]},
+                {"sportType": {"sportTypeKey": "cycling"}, "workoutSteps": [step]},
+            ]
+        }
+        steps = _workout_detail_fields(workout)["workoutSteps"]
+        assert [s["sportType"] for s in steps] == ["swimming", "cycling"]
+
+    async def _fetch(self, client, items, workout):
+        get_workout = AsyncMock(return_value=workout)
+        with (
+            patch.object(
+                client, "get_activities", new_callable=AsyncMock, return_value=[]
+            ),
+            patch.object(
+                client, "get_workouts", new_callable=AsyncMock, return_value=[]
+            ),
+            patch.object(
+                client,
+                "get_scheduled_workouts",
+                new_callable=AsyncMock,
+                return_value={"calendarItems": items},
+            ),
+            patch.object(
+                client, "get_upcoming_events", new_callable=AsyncMock, return_value=[]
+            ),
+            patch.object(client, "get_workout", get_workout),
+        ):
+            data = await client.fetch_activity_data()
+        return data, get_workout
+
+    async def test_today_and_next_get_steps_once_per_hour(self):
+        client = GarminClient(_make_auth())
+        item = {
+            "id": 1810350286,
+            "itemType": "workout",
+            "title": "Easy 3 miles",
+            "date": client.today().isoformat(),
+            "workoutId": 1731319876,
+        }
+        data, get_workout = await self._fetch(client, [item], self._WORKOUT)
+
+        steps = data["todayScheduledWorkout"]["workoutSteps"]
+        assert steps[0]["targetValueOne"] == 141.0
+        assert data["nextScheduledWorkout"]["workoutSteps"] == steps
+        # The calendar list stays light.
+        assert "workoutSteps" not in data["scheduledWorkouts"][0]
+        # Today's and next are the same workout: one call, then cached.
+        get_workout.assert_awaited_once_with(1731319876)
+        _, get_workout = await self._fetch(client, [item], self._WORKOUT)
+        get_workout.assert_not_awaited()
+
+    async def test_adaptive_item_without_workout_id_is_left_alone(self):
+        client = GarminClient(_make_auth())
+        item = {
+            "id": 1789814567000,
+            "itemType": "fbtAdaptiveWorkout",
+            "title": "Basis",
+            "date": client.today().isoformat(),
+        }
+        data, get_workout = await self._fetch(client, [item], self._WORKOUT)
+        get_workout.assert_not_awaited()
+        assert "workoutSteps" not in data["todayScheduledWorkout"]
+
+    async def test_update_and_delete_drop_cached_detail(self):
+        client = GarminClient(_make_auth())
+        client._slow_cache["workout_5"] = (0.0, {})
+        with patch.object(client, "_put_request", new_callable=AsyncMock):
+            await client.update_workout(5, {})
+        assert "workout_5" not in client._slow_cache
+        client._slow_cache["workout_5"] = (0.0, {})
+        with patch.object(client, "_delete_request", new_callable=AsyncMock):
+            await client.delete_workout(5)
+        assert "workout_5" not in client._slow_cache
