@@ -22,6 +22,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlencode
 
 from curl_cffi import requests as cffi_requests
 
@@ -149,6 +150,9 @@ LOGIN_DELAY_MAX_S = 20.0
 # Widget flow uses a shorter delay (different rate-limit bucket).
 WIDGET_DELAY_MIN_S = 3.0
 WIDGET_DELAY_MAX_S = 8.0
+# Mobile flow: the pause between loading the sign-in page and submitting it.
+MOBILE_DELAY_MIN_S = 2.0
+MOBILE_DELAY_MAX_S = 5.0
 
 # -- TLS impersonation profiles --
 MOBILE_IMPERSONATIONS: tuple[str, ...] = ("safari_ios", "safari", "chrome120")
@@ -509,7 +513,38 @@ class GarminAuth:
     # ------------------------------------------------------------------ #
 
     def _do_mobile_login(self, sess: Any, email: str, password: str) -> AuthResult:
-        """Login via sso.garmin.com/mobile/api/login (iOS app flow)."""
+        """Login via sso.garmin.com/mobile/api/login (iOS app flow).
+
+        Loads the mobile sign-in page first, as the app's web view does: a
+        credential POST without the cookies it sets (SESSION, __cf_bm, ...)
+        and without its Referer is answered with 429, while the same POST
+        after the page load is processed normally.
+        """
+        signin_url = f"{self._sso}/mobile/sso/en_US/sign-in"
+        signin_params = {"clientId": IOS_SSO_CLIENT_ID, "service": IOS_SERVICE_URL}
+        r = sess.get(
+            signin_url,
+            params=signin_params,
+            headers={
+                "User-Agent": IOS_LOGIN_UA,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+            timeout=30,
+        )
+        if r.status_code in _BLOCKED_STATUSES:
+            raise GarminRateLimitError(
+                f"Mobile sign-in page GET returned {r.status_code}"
+            )
+        if r.status_code == 403:
+            raise GarminAPIError(
+                "Mobile sign-in page: HTTP 403 (Cloudflare bot challenge)"
+            )
+
+        delay_s = random.uniform(MOBILE_DELAY_MIN_S, MOBILE_DELAY_MAX_S)
+        _LOGGER.debug("Mobile login: waiting %.0fs before submitting", delay_s)
+        time.sleep(delay_s)
+
         login_url = f"{self._sso}/mobile/api/login"
         login_params = {
             "clientId": IOS_SSO_CLIENT_ID,
@@ -519,8 +554,10 @@ class GarminAuth:
         login_headers = {
             "User-Agent": IOS_LOGIN_UA,
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
             "Content-Type": "application/json",
             "Origin": self._sso,
+            "Referer": f"{signin_url}?{urlencode(signin_params)}",
         }
 
         r = sess.post(
