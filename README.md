@@ -2,6 +2,11 @@
 
 Python client for Garmin Connect API, designed for Home Assistant integration.
 
+> **Note:** ha-garmin covers the subset of the Garmin Connect API that the
+> [Home Assistant Garmin Connect integration](https://github.com/cyberjunky/home-assistant-garmin_connect)
+> needs, with data shaped for its coordinators and sensors. For the full suite of
+> Garmin Connect API calls, use [python-garminconnect](https://github.com/cyberjunky/python-garminconnect).
+
 ## Features
 
 - **Native Garmin Connect API** integration
@@ -111,7 +116,7 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 | ------ | --------- | ------------- |
 | `fetch_core_data()` | 3 | Steps, distance, calories, HR, stress, sleep, skin temperature change, body battery, SPO2 |
 | `fetch_body_data()` | 3 | Weight, BMI, body fat, hydration, fitness age |
-| `fetch_activity_data()` | 7+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts), upcoming events and the plan goal event |
+| `fetch_activity_data()` | 7+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts, with steps and targets for today's and the next one), upcoming events and the plan goal event |
 | `fetch_training_data()` | 8+ | Training readiness, status, VO2 Max (running and cycling), heat/altitude acclimation, HRV, lactate, endurance/hill scores, power-to-weight |
 | `fetch_goals_data()` | 5 | Goals (active/future/history), badges, user level, lifetime totals |
 | `fetch_gear_data()` | 6+ | Gear items with usage totals and notes (gear v2, no per-item stats calls), device alarms, solar intensity (daily avg + gain), devices, last sync, paired sensors |
@@ -172,6 +177,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_activity_hr_in_timezones()` | HR time in zones |
 | `download_activity(activity_id, file_format)` | Download activity file (fit/original/tcx/gpx/kml/csv) |
 | `get_workouts()` | Workout library (created/saved workouts, not when scheduled) |
+| `get_workout(workout_id)` | One workout's full definition: segments, steps and targets |
 | `get_scheduled_workouts(year, month)` | Training calendar for a month: self-scheduled + Garmin Coach / adaptive-plan workouts |
 | `get_upcoming_events(days_forward, limit)` | Upcoming races and plan goal events, with projected/predicted race times |
 | `get_training_readiness()` | Training readiness score |

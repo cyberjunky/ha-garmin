@@ -603,6 +603,101 @@ def _trim_calendar_workout_item(item: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in item.items() if k in CALENDAR_WORKOUT_ESSENTIAL_KEYS}
 
 
+def _key(value: Any, key: str) -> Any:
+    """Return value[key] for Garmin's {"<thing>Key": ...} wrappers, else None."""
+    return value.get(key) if isinstance(value, dict) else None
+
+
+def _round_value(value: Any) -> Any:
+    """Round float noise (4828.02000001) off step values; leave others as is."""
+    return round(value, 2) if isinstance(value, float) else value
+
+
+_STEP_TARGET_FIELDS = {
+    "targetType": ("targetValueOne", "targetValueTwo", "zoneNumber"),
+    "secondaryTargetType": (
+        "secondaryTargetValueOne",
+        "secondaryTargetValueTwo",
+        "secondaryZoneNumber",
+    ),
+}
+
+
+def _trim_workout_step(step: dict[str, Any]) -> dict[str, Any]:
+    """Flatten one workout step; a repeat group keeps its steps nested.
+
+    Target values are as Garmin stores them: bpm for heart rate, watts for
+    power, m/s for pace/speed, or a zoneNumber instead of a range.
+    """
+    nested = step.get("workoutSteps")
+    if step.get("type") == "RepeatGroupDTO" or isinstance(nested, list):
+        trimmed: dict[str, Any] = {
+            "stepOrder": step.get("stepOrder"),
+            "stepType": "repeat",
+            "numberOfIterations": step.get("numberOfIterations"),
+            "steps": [
+                _trim_workout_step(s) for s in nested or [] if isinstance(s, dict)
+            ],
+        }
+    else:
+        trimmed = {
+            "stepOrder": step.get("stepOrder"),
+            "stepType": _key(step.get("stepType"), "stepTypeKey"),
+            "description": step.get("description"),
+            "endCondition": _key(step.get("endCondition"), "conditionTypeKey"),
+            "endConditionValue": _round_value(step.get("endConditionValue")),
+            "targetType": _key(step.get("targetType"), "workoutTargetTypeKey"),
+            "targetValueOne": _round_value(step.get("targetValueOne")),
+            "targetValueTwo": _round_value(step.get("targetValueTwo")),
+            "zoneNumber": step.get("zoneNumber"),
+            "secondaryTargetType": _key(
+                step.get("secondaryTargetType"), "workoutTargetTypeKey"
+            ),
+            "secondaryTargetValueOne": _round_value(
+                step.get("secondaryTargetValueOne")
+            ),
+            "secondaryTargetValueTwo": _round_value(
+                step.get("secondaryTargetValueTwo")
+            ),
+            "secondaryZoneNumber": step.get("secondaryZoneNumber"),
+        }
+        # Garmin stores 0.0 placeholders for values that mean nothing here.
+        for target, values in _STEP_TARGET_FIELDS.items():
+            if trimmed.get(target) in (None, "no.target"):
+                for key in values:
+                    trimmed.pop(key, None)
+        if trimmed.get("endCondition") == "lap.button":
+            trimmed.pop("endConditionValue", None)
+    return {k: v for k, v in trimmed.items() if v is not None}
+
+
+def _workout_detail_fields(workout: dict[str, Any]) -> dict[str, Any]:
+    """Steps and estimates of a workout-service workout, for a scheduled item.
+
+    Segments are flattened into one step list (multi-sport workouts carry
+    the segment's sport on each of its steps).
+    """
+    segments = [s for s in workout.get("workoutSegments") or [] if isinstance(s, dict)]
+    steps: list[dict[str, Any]] = []
+    for segment in segments:
+        sport = _key(segment.get("sportType"), "sportTypeKey")
+        for step in segment.get("workoutSteps") or []:
+            if isinstance(step, dict):
+                trimmed = _trim_workout_step(step)
+                if len(segments) > 1 and sport:
+                    trimmed["sportType"] = sport
+                steps.append(trimmed)
+    fields = {
+        "estimatedDistanceInMeters": _round_value(
+            workout.get("estimatedDistanceInMeters")
+        ),
+        "estimatedDurationInSecs": workout.get("estimatedDurationInSecs"),
+        "workoutProvider": workout.get("workoutProvider"),
+        "workoutSteps": steps,
+    }
+    return {k: v for k, v in fields.items() if v is not None}
+
+
 def _trim_goal_event(event: dict[str, Any]) -> dict[str, Any]:
     """Trim a training plan's goal event to the fields that matter.
 
@@ -1339,7 +1434,7 @@ class GarminClient:
             )
         return bytes(response.content)
 
-    async def _cached_safe_call(self, key: str, func: Any) -> Any:
+    async def _cached_safe_call(self, key: str, func: Any, *args: Any) -> Any:
         """_safe_call, reusing a successful result for _SLOW_CACHE_SECONDS.
 
         For data that barely changes (lifetime totals, upcoming events), so
@@ -1349,7 +1444,7 @@ class GarminClient:
         cached = self._slow_cache.get(key)
         if cached and time.monotonic() - cached[0] < _SLOW_CACHE_SECONDS:
             return cached[1]
-        value = await self._safe_call(func)
+        value = await self._safe_call(func, *args)
         if value is not None:
             self._slow_cache[key] = (time.monotonic(), value)
         return value
@@ -1690,6 +1785,12 @@ class GarminClient:
         if isinstance(data, dict):
             return data.get("workouts", [])
         return data if isinstance(data, list) else []
+
+    async def get_workout(self, workout_id: int) -> dict[str, Any]:
+        """Get one workout's full definition: segments, steps and targets."""
+        workout_id = _validate_positive_int(workout_id, "workout_id")
+        data = await self._request("GET", f"{WORKOUT_URL}/{workout_id}")
+        return data if isinstance(data, dict) else {}
 
     async def get_scheduled_workouts(self, year: int, month: int) -> dict[str, Any]:
         """Get the training calendar for a given year and month (1-12).
@@ -2871,11 +2972,13 @@ class GarminClient:
         if not isinstance(workout, dict):
             raise ValueError("workout must be a JSON object")
         url = f"{WORKOUT_URL}/{workout_id}"
+        self._slow_cache.pop(f"workout_{workout_id}", None)
         return await self._put_request(url, workout | {"workoutId": workout_id})
 
     async def delete_workout(self, workout_id: int) -> dict[str, Any]:
         """Delete a workout from the library (also drops its schedules)."""
         workout_id = _validate_positive_int(workout_id, "workout_id")
+        self._slow_cache.pop(f"workout_{workout_id}", None)
         return await self._delete_request(f"{WORKOUT_URL}/{workout_id}")
 
     async def schedule_workout(
@@ -3117,7 +3220,9 @@ class GarminClient:
         API calls: get_activities, get_activity_details,
                    get_activity_hr_in_timezones, get_workouts,
                    get_scheduled_workouts x2 (this + next month) (6 calls),
-                   get_upcoming_events at most once an hour, get_activity once per
+                   get_upcoming_events at most once an hour, get_workout for
+                   today's and the next scheduled workout at most once an hour
+                   each, get_activity once per
                    new activity (e-bike fields, Connect IQ measurements) and
                    get_activity_connect_iq_display_info when it has any
 
@@ -3231,6 +3336,23 @@ class GarminClient:
             (w for w in scheduled_workouts if w.get("date") == today_str), {}
         )
         next_workout = scheduled_workouts[0] if scheduled_workouts else {}
+        # Steps and targets for today's and the next session only, on copies
+        # so scheduledWorkouts stays light. Adaptive/Coach items carry no
+        # workoutId and are left as they are.
+        today_workout, next_workout = dict(today_workout), dict(next_workout)
+        for workout in (today_workout, next_workout):
+            workout_id = workout.get("workoutId")
+            if (
+                isinstance(workout_id, bool)
+                or not isinstance(workout_id, int)
+                or workout_id <= 0
+            ):
+                continue
+            detail = await self._cached_safe_call(
+                f"workout_{workout_id}", self.get_workout, workout_id
+            )
+            if detail:
+                workout.update(_workout_detail_fields(detail))
 
         # Goal event: the plan's own target race, else the primary event,
         # else the soonest race. atpPlanId (not the item's own trainingPlanId,
