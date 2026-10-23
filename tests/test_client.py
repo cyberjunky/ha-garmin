@@ -3267,7 +3267,7 @@ class TestSlowCache:
 class TestScheduledWorkoutSteps:
     """Today's and the next scheduled workout carry their steps and targets."""
 
-    # Shape from a Final Surge workout synced to Garmin (issue #627), plus a
+    # Shape from a Final Surge workout synced to Garmin, plus a
     # repeat group as Garmin stores intervals.
     _WORKOUT = {
         "workoutId": 1731319876,
@@ -3320,6 +3320,25 @@ class TestScheduledWorkoutSteps:
             }
         ],
     }
+
+    def test_placeholder_values_are_dropped(self):
+        """Garmin's 0.0 for an untargeted or lap-button step means nothing."""
+        from ha_garmin.client import _trim_workout_step
+
+        step = {
+            "stepOrder": 1,
+            "stepType": {"stepTypeKey": "warmup"},
+            "endCondition": {"conditionTypeKey": "lap.button"},
+            "endConditionValue": 0.0,
+            "targetType": {"workoutTargetTypeKey": "no.target"},
+            "targetValueTwo": 0.0,
+        }
+        assert _trim_workout_step(step) == {
+            "stepOrder": 1,
+            "stepType": "warmup",
+            "endCondition": "lap.button",
+            "targetType": "no.target",
+        }
 
     def test_detail_fields_flatten_steps_and_keep_repeats_nested(self):
         from ha_garmin.client import _workout_detail_fields
@@ -3441,3 +3460,25 @@ class TestScheduledWorkoutSteps:
         with patch.object(client, "_delete_request", new_callable=AsyncMock):
             await client.delete_workout(5)
         assert "workout_5" not in client._slow_cache
+
+
+class TestTrainingStatusLabel:
+    def test_phrase_wins_over_code_in_computed_fields(self):
+        from ha_garmin.client import _add_computed_fields
+
+        result = _add_computed_fields(
+            {
+                "trainingStatus": {
+                    "mostRecentTrainingStatus": {
+                        "latestTrainingStatusData": {
+                            "123": {
+                                "calendarDate": "2026-10-23",
+                                "trainingStatus": 3,
+                                "trainingStatusFeedbackPhrase": "OVERREACHING_1",
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        assert result["trainingStatusPhrase"] == "Overreaching"

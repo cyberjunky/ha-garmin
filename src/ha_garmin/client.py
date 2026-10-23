@@ -613,6 +613,16 @@ def _round_value(value: Any) -> Any:
     return round(value, 2) if isinstance(value, float) else value
 
 
+_STEP_TARGET_FIELDS = {
+    "targetType": ("targetValueOne", "targetValueTwo", "zoneNumber"),
+    "secondaryTargetType": (
+        "secondaryTargetValueOne",
+        "secondaryTargetValueTwo",
+        "secondaryZoneNumber",
+    ),
+}
+
+
 def _trim_workout_step(step: dict[str, Any]) -> dict[str, Any]:
     """Flatten one workout step; a repeat group keeps its steps nested.
 
@@ -651,6 +661,13 @@ def _trim_workout_step(step: dict[str, Any]) -> dict[str, Any]:
             ),
             "secondaryZoneNumber": step.get("secondaryZoneNumber"),
         }
+        # Garmin stores 0.0 placeholders for values that mean nothing here.
+        for target, values in _STEP_TARGET_FIELDS.items():
+            if trimmed.get(target) in (None, "no.target"):
+                for key in values:
+                    trimmed.pop(key, None)
+        if trimmed.get("endCondition") == "lap.button":
+            trimmed.pop("endConditionValue", None)
     return {k: v for k, v in trimmed.items() if v is not None}
 
 
@@ -849,17 +866,17 @@ def _extract_sleep_timezone_offset_minutes(
     return 0
 
 
-_TRAINING_STATUS_MAP: dict[int, str] = {
-    0: "No Status",
-    1: "Peaking (Legacy)",
-    2: "Unproductive",
-    3: "Detraining",
-    4: "Maintaining",
-    5: "Recovering",
-    6: "Peaking",
-    7: "Productive",
-    8: "Strained",
-}
+def _training_status_label(entry: dict[str, Any]) -> str | None:
+    """Return the training status label for one device's status entry.
+
+    Derived from trainingStatusFeedbackPhrase, which Garmin sends with the
+    numeric code: the trailing _<n> is stripped and the rest title-cased
+    (OVERREACHING_1 -> "Overreaching", NO_STATUS -> "No Status").
+    """
+    phrase = entry.get("trainingStatusFeedbackPhrase")
+    if not isinstance(phrase, str) or not phrase.strip():
+        return None
+    return re.sub(r"_\d+$", "", phrase.strip()).replace("_", " ").title()
 
 
 def _vo2max_sport_entry(most_recent_vo2: dict[str, Any]) -> dict[str, Any]:
@@ -989,12 +1006,7 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
                 device_entries,
                 key=lambda x: x.get("calendarDate") or "",
             )
-            status_code = most_recent.get("trainingStatus")
-            result["trainingStatusPhrase"] = (
-                _TRAINING_STATUS_MAP.get(status_code)
-                if isinstance(status_code, int)
-                else None
-            )
+            result["trainingStatusPhrase"] = _training_status_label(most_recent)
         else:
             result["trainingStatusPhrase"] = None
         most_recent_vo2 = training_status.get("mostRecentVO2Max")

@@ -4,7 +4,11 @@ import pytest
 
 from ha_garmin.client import _add_computed_fields
 
-_LIVE = {"calendarDate": "2026-08-11", "trainingStatus": 7}
+_LIVE = {
+    "calendarDate": "2026-08-11",
+    "trainingStatus": 7,
+    "trainingStatusFeedbackPhrase": "PRODUCTIVE_6",
+}
 
 
 def _payload(devices: dict[str, object]) -> dict[str, object]:
@@ -47,8 +51,14 @@ def test_the_most_recent_device_wins() -> None:
     result = _add_computed_fields(
         _payload(
             {
-                "old": {"calendarDate": "2026-08-01", "trainingStatus": 8},
-                "new": {"calendarDate": "2026-08-11", "trainingStatus": 7},
+                "old": {
+                    "calendarDate": "2026-08-01",
+                    "trainingStatusFeedbackPhrase": "STRAINED_3",
+                },
+                "new": {
+                    "calendarDate": "2026-08-11",
+                    "trainingStatusFeedbackPhrase": "PRODUCTIVE_6",
+                },
                 "quiet": None,
             }
         )
@@ -58,36 +68,61 @@ def test_the_most_recent_device_wins() -> None:
 
 
 @pytest.mark.parametrize(
-    ("code", "phrase"),
+    ("phrase", "label"),
     [
-        (2, "Unproductive"),
-        (3, "Detraining"),
-        (4, "Maintaining"),
-        (5, "Recovering"),
+        ("OVERREACHING_1", "Overreaching"),
+        ("MAINTAINING_1", "Maintaining"),
+        ("RECOVERY_1", "Recovery"),
+        ("PRODUCTIVE_6", "Productive"),
+        ("STRAINED_3", "Strained"),
+        ("NO_STATUS", "No Status"),
     ],
 )
-def test_the_codes_that_were_swapped(code: int, phrase: str) -> None:
-    """Regression: these four had no coverage when they were wrong."""
+def test_label_comes_from_garmins_phrase(phrase: str, label: str) -> None:
+    """Phrases as Garmin sends them, seen on a real account."""
     result = _add_computed_fields(
-        _payload({"dev1": {"calendarDate": "2026-08-11", "trainingStatus": code}})
+        _payload(
+            {
+                "dev1": {
+                    "calendarDate": "2026-08-11",
+                    "trainingStatusFeedbackPhrase": phrase,
+                }
+            }
+        )
     )
 
-    assert result["trainingStatusPhrase"] == phrase
+    assert result["trainingStatusPhrase"] == label
 
 
-def test_an_unknown_code_is_not_a_crash() -> None:
-    """Garmin adds statuses; an unmapped one should read as absent."""
+def test_the_phrase_wins_over_the_code() -> None:
+    """Code 3 is Overreaching; an old code table called it Detraining."""
     result = _add_computed_fields(
-        _payload({"dev1": {"calendarDate": "2026-08-11", "trainingStatus": 99}})
+        _payload(
+            {
+                "dev1": {
+                    "calendarDate": "2026-08-11",
+                    "trainingStatus": 3,
+                    "trainingStatusFeedbackPhrase": "OVERREACHING_1",
+                }
+            }
+        )
     )
 
-    assert result["trainingStatusPhrase"] is None
+    assert result["trainingStatusPhrase"] == "Overreaching"
 
 
-def test_a_status_code_that_cannot_be_a_key() -> None:
-    """`dict.get` raises on an unhashable key, so the type check earns its place."""
+@pytest.mark.parametrize("phrase", [None, "", "  ", 3, []])
+def test_no_usable_phrase_reads_as_absent(phrase: object) -> None:
     result = _add_computed_fields(
-        _payload({"dev1": {"calendarDate": "2026-08-11", "trainingStatus": []}})
+        _payload(
+            {
+                "dev1": {
+                    "calendarDate": "2026-08-11",
+                    "trainingStatus": 3,
+                    "trainingStatusFeedbackPhrase": phrase,
+                }
+            }
+        )
     )
 
     assert result["trainingStatusPhrase"] is None
@@ -104,9 +139,15 @@ async def test_the_whole_training_fetch_survives_a_quiet_device() -> None:
     status = {
         "mostRecentTrainingStatus": {
             "latestTrainingStatusData": {
-                "watch_a": {"calendarDate": "2026-08-10", "trainingStatus": 8},
+                "watch_a": {
+                    "calendarDate": "2026-08-10",
+                    "trainingStatusFeedbackPhrase": "STRAINED_3",
+                },
                 "watch_b": None,
-                "watch_c": {"calendarDate": "2026-08-12", "trainingStatus": 7},
+                "watch_c": {
+                    "calendarDate": "2026-08-12",
+                    "trainingStatusFeedbackPhrase": "PRODUCTIVE_6",
+                },
             }
         },
         "mostRecentVO2Max": {"generic": {"vo2MaxValue": 48}},
