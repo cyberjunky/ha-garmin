@@ -42,6 +42,11 @@ from .models import AuthResult
 
 _LOGGER = logging.getLogger(__name__)
 
+# Statuses the SSO answers with when it blocks a login attempt: 429, and the
+# non-standard 427 the widget embed page has been seen returning alongside
+# 429s from every other strategy.
+_BLOCKED_STATUSES = frozenset({427, 429})
+
 # A 401 from the API tier means the token itself is refused, but a 403 can
 # also mean Garmin is blocking the client or network making the call, in
 # which case the token may be fine and the "token rejected" wording misleads.
@@ -432,10 +437,12 @@ class GarminAuth:
                 # Bad credentials or MFA needed — stop immediately.
                 raise
             except GarminRateLimitError as e:
-                _LOGGER.debug("%s returned 429: %s", name, _sanitize_exception_text(e))
+                _LOGGER.debug(
+                    "%s rate limited or blocked: %s", name, _sanitize_exception_text(e)
+                )
                 rate_limited_count += 1
                 last_err = e
-                failures.append(f"{name}: 429")
+                failures.append(f"{name}: rate limited")
                 continue
             except Exception as e:
                 _LOGGER.debug("%s failed: %s", name, _sanitize_exception_text(e))
@@ -446,7 +453,7 @@ class GarminAuth:
         summary = "; ".join(failures)
         if rate_limited_count == len(strategies):
             raise GarminRateLimitError(
-                "All login strategies rate limited (429). "
+                "All login strategies rate limited or blocked (HTTP 429/427). "
                 "Garmin may be blocking this client or network rather than "
                 "rate limiting; try again later or from another network."
             )
@@ -529,9 +536,9 @@ class GarminAuth:
             timeout=30,
         )
 
-        if r.status_code == 429:
+        if r.status_code in _BLOCKED_STATUSES:
             raise GarminRateLimitError(
-                "Mobile login returned 429 — rate limited or blocked by Garmin "
+                f"Mobile login returned {r.status_code} — rate limited or blocked by Garmin "
                 "(can be triggered by the client fingerprint, not only the IP)"
             )
 
@@ -605,8 +612,8 @@ class GarminAuth:
 
         # Step 1: GET embed page to establish session cookies
         r = sess.get(sso_embed, params=embed_params)
-        if r.status_code == 429:
-            raise GarminRateLimitError("Widget embed GET returned 429")
+        if r.status_code in _BLOCKED_STATUSES:
+            raise GarminRateLimitError(f"Widget embed GET returned {r.status_code}")
         if not r.ok:
             raise GarminAPIError(f"Widget embed returned {r.status_code}")
 
@@ -614,8 +621,8 @@ class GarminAuth:
         r = sess.get(
             f"{sso_base}/signin", params=signin_params, headers={"Referer": sso_embed}
         )
-        if r.status_code == 429:
-            raise GarminRateLimitError("Widget signin GET returned 429")
+        if r.status_code in _BLOCKED_STATUSES:
+            raise GarminRateLimitError(f"Widget signin GET returned {r.status_code}")
 
         csrf_match = self._CSRF_RE.search(r.text)
         if not csrf_match:
@@ -640,8 +647,8 @@ class GarminAuth:
             timeout=30,
         )
 
-        if r.status_code == 429:
-            raise GarminRateLimitError("Widget signin POST returned 429")
+        if r.status_code in _BLOCKED_STATUSES:
+            raise GarminRateLimitError(f"Widget signin POST returned {r.status_code}")
 
         title_match = self._TITLE_RE.search(r.text)
         title = title_match.group(1) if title_match else ""
@@ -741,8 +748,8 @@ class GarminAuth:
             timeout=30,
         )
 
-        if r.status_code == 429:
-            raise GarminRateLimitError("Widget MFA verify returned 429")
+        if r.status_code in _BLOCKED_STATUSES:
+            raise GarminRateLimitError(f"Widget MFA verify returned {r.status_code}")
 
         title_match = self._TITLE_RE.search(r.text)
         title = title_match.group(1) if title_match else ""
@@ -797,8 +804,10 @@ class GarminAuth:
             timeout=30,
         )
 
-        if r.status_code == 429:
-            raise GarminRateLimitError("Widget MFA code request returned 429")
+        if r.status_code in _BLOCKED_STATUSES:
+            raise GarminRateLimitError(
+                f"Widget MFA code request returned {r.status_code}"
+            )
         if not r.ok:
             raise GarminAPIError(f"Widget MFA code request returned {r.status_code}")
 
@@ -872,9 +881,10 @@ class GarminAuth:
             timeout=30,
         )
 
-        if get_resp.status_code == 429:
+        if get_resp.status_code in _BLOCKED_STATUSES:
             raise GarminRateLimitError(
-                "Portal login GET returned 429 — Cloudflare blocking this request."
+                f"Portal login GET returned {get_resp.status_code} — "
+                "Cloudflare blocking this request."
             )
 
         # Anti-WAF delay: 30-45s mimics real browser "read then type" behaviour.
@@ -916,9 +926,10 @@ class GarminAuth:
             timeout=30,
         )
 
-        if r.status_code == 429:
+        if r.status_code in _BLOCKED_STATUSES:
             raise GarminRateLimitError(
-                "Portal login POST returned 429 — Cloudflare blocking this request."
+                f"Portal login POST returned {r.status_code} — "
+                "Cloudflare blocking this request."
             )
 
         try:
@@ -1056,8 +1067,8 @@ class GarminAuth:
                 )
                 continue
 
-            if r.status_code == 429:
-                failures.append(f"{mfa_url}: HTTP 429")
+            if r.status_code in _BLOCKED_STATUSES:
+                failures.append(f"{mfa_url}: HTTP {r.status_code}")
                 rate_limited_count += 1
                 continue
 
