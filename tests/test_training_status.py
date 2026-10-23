@@ -61,7 +61,7 @@ def test_the_most_recent_device_wins() -> None:
     ("code", "phrase"),
     [
         (2, "Unproductive"),
-        (3, "Detraining"),
+        (3, "Overreaching"),
         (4, "Maintaining"),
         (5, "Recovering"),
     ],

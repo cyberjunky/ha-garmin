@@ -771,17 +771,39 @@ def _extract_sleep_timezone_offset_minutes(
     return 0
 
 
+# Fallback for when Garmin sends no trainingStatusFeedbackPhrase. Codes 3, 4,
+# 5, 7 and 8 are confirmed against the phrases Garmin sends with them; 0, 1, 2
+# and 6 are not.
 _TRAINING_STATUS_MAP: dict[int, str] = {
     0: "No Status",
     1: "Peaking (Legacy)",
     2: "Unproductive",
-    3: "Detraining",
+    3: "Overreaching",
     4: "Maintaining",
     5: "Recovering",
     6: "Peaking",
     7: "Productive",
     8: "Strained",
 }
+
+# Phrase stems whose title-cased form differs from the established state.
+_TRAINING_STATUS_PHRASE_LABELS = {"RECOVERY": "Recovering"}
+
+
+def _training_status_label(entry: dict[str, Any]) -> str | None:
+    """Return the training status label for one device's status entry.
+
+    Taken from trainingStatusFeedbackPhrase (e.g. OVERREACHING_1), which Garmin
+    sends with the numeric code; the code map is only a fallback.
+    """
+    phrase = entry.get("trainingStatusFeedbackPhrase")
+    if isinstance(phrase, str) and phrase.strip():
+        stem = re.sub(r"_\d+$", "", phrase.strip().upper())
+        return _TRAINING_STATUS_PHRASE_LABELS.get(stem, stem.replace("_", " ").title())
+    code = entry.get("trainingStatus")
+    if isinstance(code, int) and not isinstance(code, bool):
+        return _TRAINING_STATUS_MAP.get(code)
+    return None
 
 
 def _vo2max_sport_entry(most_recent_vo2: dict[str, Any]) -> dict[str, Any]:
@@ -911,12 +933,7 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
                 device_entries,
                 key=lambda x: x.get("calendarDate") or "",
             )
-            status_code = most_recent.get("trainingStatus")
-            result["trainingStatusPhrase"] = (
-                _TRAINING_STATUS_MAP.get(status_code)
-                if isinstance(status_code, int)
-                else None
-            )
+            result["trainingStatusPhrase"] = _training_status_label(most_recent)
         else:
             result["trainingStatusPhrase"] = None
         most_recent_vo2 = training_status.get("mostRecentVO2Max")
