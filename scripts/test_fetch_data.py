@@ -26,7 +26,7 @@ EMAIL = os.getenv("GARMIN_EMAIL", "your-email@example.com")
 PASSWORD = os.getenv("GARMIN_PASSWORD", "your-password")
 
 # Token storage file
-TOKEN_FILE = Path(__file__).parent / ".garmin_tokens.json"
+TOKEN_FILE = Path(__file__).resolve().parent.parent / ".garmin_tokens.json"
 
 
 def json_serial(obj):

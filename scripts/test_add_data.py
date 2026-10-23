@@ -24,7 +24,7 @@ logging.getLogger("ha_garmin").setLevel(logging.DEBUG)
 
 EMAIL = os.getenv("GARMIN_EMAIL", "your-email@example.com")
 PASSWORD = os.getenv("GARMIN_PASSWORD", "your-password")
-TOKEN_FILE = Path(__file__).parent / ".garmin_tokens.json"
+TOKEN_FILE = Path(__file__).resolve().parent.parent / ".garmin_tokens.json"
 
 MENU = [
     ("Nutrition quick-add", "nutrition"),
