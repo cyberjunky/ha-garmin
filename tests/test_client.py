@@ -3256,3 +3256,25 @@ class TestSlowCache:
         fetch = AsyncMock(side_effect=[GarminAPIError("boom"), {"ok": True}])
         assert await client._cached_safe_call("k", fetch) is None
         assert await client._cached_safe_call("k", fetch) == {"ok": True}
+
+
+class TestTrainingStatusLabel:
+    def test_phrase_wins_over_code_in_computed_fields(self):
+        from ha_garmin.client import _add_computed_fields
+
+        result = _add_computed_fields(
+            {
+                "trainingStatus": {
+                    "mostRecentTrainingStatus": {
+                        "latestTrainingStatusData": {
+                            "123": {
+                                "calendarDate": "2026-10-23",
+                                "trainingStatus": 3,
+                                "trainingStatusFeedbackPhrase": "OVERREACHING_1",
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        assert result["trainingStatusPhrase"] == "Overreaching"
