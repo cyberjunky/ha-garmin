@@ -771,39 +771,17 @@ def _extract_sleep_timezone_offset_minutes(
     return 0
 
 
-# Fallback for when Garmin sends no trainingStatusFeedbackPhrase. Codes 3, 4,
-# 5, 7 and 8 are confirmed against the phrases Garmin sends with them; 0, 1, 2
-# and 6 are not.
-_TRAINING_STATUS_MAP: dict[int, str] = {
-    0: "No Status",
-    1: "Peaking (Legacy)",
-    2: "Unproductive",
-    3: "Overreaching",
-    4: "Maintaining",
-    5: "Recovering",
-    6: "Peaking",
-    7: "Productive",
-    8: "Strained",
-}
-
-# Phrase stems whose title-cased form differs from the established state.
-_TRAINING_STATUS_PHRASE_LABELS = {"RECOVERY": "Recovering"}
-
-
 def _training_status_label(entry: dict[str, Any]) -> str | None:
     """Return the training status label for one device's status entry.
 
-    Taken from trainingStatusFeedbackPhrase (e.g. OVERREACHING_1), which Garmin
-    sends with the numeric code; the code map is only a fallback.
+    Derived from trainingStatusFeedbackPhrase, which Garmin sends with the
+    numeric code: the trailing _<n> is stripped and the rest title-cased
+    (OVERREACHING_1 -> "Overreaching", NO_STATUS -> "No Status").
     """
     phrase = entry.get("trainingStatusFeedbackPhrase")
-    if isinstance(phrase, str) and phrase.strip():
-        stem = re.sub(r"_\d+$", "", phrase.strip().upper())
-        return _TRAINING_STATUS_PHRASE_LABELS.get(stem, stem.replace("_", " ").title())
-    code = entry.get("trainingStatus")
-    if isinstance(code, int) and not isinstance(code, bool):
-        return _TRAINING_STATUS_MAP.get(code)
-    return None
+    if not isinstance(phrase, str) or not phrase.strip():
+        return None
+    return re.sub(r"_\d+$", "", phrase.strip()).replace("_", " ").title()
 
 
 def _vo2max_sport_entry(most_recent_vo2: dict[str, Any]) -> dict[str, Any]:

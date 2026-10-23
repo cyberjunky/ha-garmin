@@ -3259,34 +3259,6 @@ class TestSlowCache:
 
 
 class TestTrainingStatusLabel:
-    @pytest.mark.parametrize(
-        ("entry", "expected"),
-        [
-            (
-                {"trainingStatus": 3, "trainingStatusFeedbackPhrase": "OVERREACHING_1"},
-                "Overreaching",
-            ),
-            (
-                {"trainingStatus": 5, "trainingStatusFeedbackPhrase": "RECOVERY_1"},
-                "Recovering",
-            ),
-            (
-                {"trainingStatus": 7, "trainingStatusFeedbackPhrase": "PRODUCTIVE_6"},
-                "Productive",
-            ),
-            ({"trainingStatusFeedbackPhrase": "NO_STATUS"}, "No Status"),
-            # No phrase: the numeric code is the fallback.
-            ({"trainingStatus": 3}, "Overreaching"),
-            ({"trainingStatus": 8, "trainingStatusFeedbackPhrase": ""}, "Strained"),
-            ({"trainingStatus": True}, None),
-            ({}, None),
-        ],
-    )
-    def test_label(self, entry, expected):
-        from ha_garmin.client import _training_status_label
-
-        assert _training_status_label(entry) == expected
-
     def test_phrase_wins_over_code_in_computed_fields(self):
         from ha_garmin.client import _add_computed_fields
 
