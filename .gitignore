@@ -77,3 +77,4 @@ dmypy.json
 
 # Ruff
 .ruff_cache/
+.pdm-python
