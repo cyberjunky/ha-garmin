@@ -114,7 +114,7 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 
 | Method | API Calls | Data Returned |
 | ------ | --------- | ------------- |
-| `fetch_core_data()` | 3 | Steps, distance, calories, HR, stress, sleep, skin temperature change, body battery, SPO2 |
+| `fetch_core_data(latest_heart_rate=False)` | 3+ | Steps, distance, calories, HR, stress, sleep, skin temperature change, body battery, SPO2; with `latest_heart_rate=True` also the latest heart rate sample (re-fetched only after a new watch sync) |
 | `fetch_body_data()` | 3 | Weight, BMI, body fat, hydration, fitness age |
 | `fetch_activity_data()` | 7+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts, with steps and targets for today's and the next one), upcoming events and the plan goal event |
 | `fetch_training_data()` | 8+ | Training readiness, status, VO2 Max (running and cycling), heat/altitude acclimation, HRV, lactate, endurance/hill scores, power-to-weight |
@@ -168,6 +168,8 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_user_settings()` | Profile settings (`userData`, incl. VO2 Max running/cycling) |
 | `get_daily_summary(date)` | Garmin's full daily summary for any date (steps, calories, HR, stress, Body Battery, intensity minutes, respiration, floors) |
 | `get_daily_steps()` | Steps for date range |
+| `get_daily_heart_rate(date)` | A day's heart rate: resting/min/max and the samples (`[UTC epoch ms, bpm]`, about every 2 minutes) |
+| `get_latest_heart_rate()` | Newest heart rate sample and its UTC time (yesterday's last right after midnight); only as recent as the last watch sync |
 | `get_body_composition()` | Latest weigh-in: weight, BMI, body fat |
 | `get_fitness_age()` | Fitness age metrics |
 | `get_hydration_data()` | Daily hydration |
