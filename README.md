@@ -166,6 +166,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | ------ | ----------- |
 | `get_user_profile()` | User profile info |
 | `get_user_settings()` | Profile settings (`userData`, incl. VO2 Max running/cycling) |
+| `get_daily_summary(date)` | Garmin's full daily summary for any date (steps, calories, HR, stress, Body Battery, intensity minutes, respiration, floors) |
 | `get_daily_steps()` | Steps for date range |
 | `get_body_composition()` | Latest weigh-in: weight, BMI, body fat |
 | `get_fitness_age()` | Fitness age metrics |
