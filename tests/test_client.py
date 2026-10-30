@@ -3542,7 +3542,14 @@ class TestLifetimeTotals:
         assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
         # An hour later Garmin is asked again; showing the totals clears the flag.
-        client._slow_cache["lifetime_totals"] = (0.0, {})
+        # (Expire relative to now: a fresh CI runner's monotonic clock is < 1 h.)
+        from ha_garmin.client import _SLOW_CACHE_SECONDS
+
+        fetched, value = client._slow_cache["lifetime_totals"]
+        client._slow_cache["lifetime_totals"] = (
+            fetched - _SLOW_CACHE_SECONDS - 1,
+            value,
+        )
         lifetime.side_effect = None
         lifetime.return_value = {"totalSteps": 1}
         data = await client.fetch_goals_data()
