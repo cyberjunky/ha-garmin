@@ -3503,6 +3503,127 @@ class TestGetDailySummary:
             await client.get_daily_summary("2026-10-29")
 
 
+class TestLatestHeartRate:
+    """The newest heart rate sample, fetched again only after a watch sync."""
+
+    # Shape from a live dailyHeartRate response (values shortened).
+    _DAY = {
+        "calendarDate": "2026-10-30",
+        "heartRateValueDescriptors": [
+            {"index": 0, "key": "timestamp"},
+            {"index": 1, "key": "heartrate"},
+        ],
+        "heartRateValues": [
+            [1793314800000, 62],
+            [1793339160000, 57],
+            [1793339280000, None],
+        ],
+    }
+
+    def test_newest_sample_with_a_value(self):
+        from ha_garmin.client import _latest_heart_rate_sample
+
+        assert _latest_heart_rate_sample(self._DAY) == {
+            "latestHeartRate": 57,
+            "latestHeartRateTime": datetime(2026, 10, 30, 5, 46, tzinfo=UTC),
+        }
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            None,
+            [],
+            [[1793339160000, None]],
+            [[1793339160000, 0]],
+            [["x", 57]],
+            [[1, True]],
+        ],
+    )
+    def test_no_usable_sample(self, values):
+        from ha_garmin.client import _latest_heart_rate_sample
+
+        assert _latest_heart_rate_sample({"heartRateValues": values}) == {}
+
+    async def test_falls_back_to_yesterday_after_midnight(self):
+        client = GarminClient(_make_auth())
+        today = client.today()
+        days = {today: {"heartRateValues": []}, today - timedelta(days=1): self._DAY}
+        with patch.object(
+            client, "get_daily_heart_rate", side_effect=lambda d: days[d]
+        ) as daily:
+            sample = await client.get_latest_heart_rate()
+        assert sample["latestHeartRate"] == 57
+        assert daily.call_count == 2
+
+    async def test_daily_heart_rate_request(self):
+        from ha_garmin.const import DAILY_HEART_RATE_URL
+
+        client = GarminClient(_make_auth())
+        client._profile_cache = _PROFILE
+        client._request = AsyncMock(return_value=self._DAY)
+        assert await client.get_daily_heart_rate(date(2026, 10, 30)) == self._DAY
+        client._request.assert_awaited_once_with(
+            "GET", f"{DAILY_HEART_RATE_URL}/tester", params={"date": "2026-10-30"}
+        )
+
+    async def test_cached_until_a_new_sync(self):
+        client = GarminClient(_make_auth())
+        sample = {
+            "latestHeartRate": 57,
+            "latestHeartRateTime": datetime(2026, 10, 30, tzinfo=UTC),
+        }
+        latest = AsyncMock(return_value=sample)
+        with patch.object(client, "get_latest_heart_rate", latest):
+            assert await client._latest_heart_rate_since_sync("s1") == sample
+            assert await client._latest_heart_rate_since_sync("s1") == sample
+            latest.assert_awaited_once()
+            await client._latest_heart_rate_since_sync("s2")
+        assert latest.await_count == 2
+
+    async def test_failed_fetch_is_retried_next_poll(self):
+        client = GarminClient(_make_auth())
+        latest = AsyncMock(side_effect=GarminAPIError("Request failed: 500", 500))
+        with patch.object(client, "get_latest_heart_rate", latest):
+            assert await client._latest_heart_rate_since_sync("s1") == {}
+            await client._latest_heart_rate_since_sync("s1")
+        assert latest.await_count == 2
+
+    async def test_core_data_only_includes_it_when_asked(self):
+        client = GarminClient(_make_auth())
+        sample = {
+            "latestHeartRate": 57,
+            "latestHeartRateTime": datetime(2026, 10, 30, tzinfo=UTC),
+        }
+        with (
+            patch.object(
+                client,
+                "_get_user_summary_raw",
+                new_callable=AsyncMock,
+                return_value={
+                    "dailyStepGoal": 1,
+                    "lastSyncTimestampGMT": "2026-10-30T05:49:00.0",
+                },
+            ),
+            patch.object(
+                client, "get_daily_steps", new_callable=AsyncMock, return_value=[]
+            ),
+            patch.object(
+                client, "_get_sleep_data_raw", new_callable=AsyncMock, return_value={}
+            ),
+            patch.object(
+                client,
+                "get_latest_heart_rate",
+                new_callable=AsyncMock,
+                return_value=sample,
+            ) as latest,
+        ):
+            assert "latestHeartRate" not in await client.fetch_core_data()
+            latest.assert_not_awaited()
+            data = await client.fetch_core_data(latest_heart_rate=True)
+        assert data["latestHeartRate"] == 57
+        assert data["latestHeartRateTime"] == sample["latestHeartRateTime"]
+
+
 class TestLifetimeTotals:
     """Lifetime totals: optional, hourly, and a profile that hides them is reported."""
 

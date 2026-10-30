@@ -35,6 +35,7 @@ ADAPTIVE_TRAINING_PLAN_URL = (
 # Wellness endpoints
 HRV_URL = f"{GARMIN_CONNECT_API}/hrv-service/hrv"
 SLEEP_URL = f"{GARMIN_CONNECT_API}/sleep-service/sleep/dailySleepData"
+DAILY_HEART_RATE_URL = f"{GARMIN_CONNECT_API}/wellness-service/wellness/dailyHeartRate"
 HYDRATION_URL = f"{GARMIN_CONNECT_API}/usersummary-service/usersummary/hydration/daily"
 HYDRATION_LOG_URL = (
     f"{GARMIN_CONNECT_API}/usersummary-service/usersummary/hydration/log"
