@@ -3622,3 +3622,65 @@ class TestLatestHeartRate:
             data = await client.fetch_core_data(latest_heart_rate=True)
         assert data["latestHeartRate"] == 57
         assert data["latestHeartRateTime"] == sample["latestHeartRateTime"]
+
+
+class TestLifetimeTotals:
+    """Lifetime totals: optional, hourly, and a profile that hides them is reported."""
+
+    @staticmethod
+    def _goals_client(lifetime):
+        client = GarminClient(_make_auth())
+        for name in ("get_goals", "get_earned_badges"):
+            setattr(client, name, AsyncMock(return_value=[]))
+        client.get_lifetime_totals = lifetime
+        return client
+
+    async def test_skipped_when_not_wanted(self):
+        lifetime = AsyncMock(return_value={"totalSteps": 1})
+        client = self._goals_client(lifetime)
+        data = await client.fetch_goals_data(lifetime_totals=False)
+        assert data["lifetimeTotals"] == {}
+        assert data["lifetimeTotalsHidden"] is False
+        lifetime.assert_not_awaited()
+
+    async def test_fetched_once_an_hour(self):
+        lifetime = AsyncMock(return_value={"totalSteps": 1})
+        client = self._goals_client(lifetime)
+        for _ in range(2):
+            data = await client.fetch_goals_data()
+            assert data["lifetimeTotals"] == {"totalSteps": 1}
+            assert data["lifetimeTotalsHidden"] is False
+        lifetime.assert_awaited_once()
+
+    async def test_403_reports_hidden_and_is_rechecked_hourly(self, caplog):
+        lifetime = AsyncMock(side_effect=GarminAPIError("Request failed: 403", 403))
+        client = self._goals_client(lifetime)
+        for _ in range(2):
+            data = await client.fetch_goals_data()
+            assert data["lifetimeTotals"] == {}
+            assert data["lifetimeTotalsHidden"] is True
+        lifetime.assert_awaited_once()
+        assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+        # An hour later Garmin is asked again; showing the totals clears the flag.
+        # (Expire relative to now: a fresh CI runner's monotonic clock is < 1 h.)
+        from ha_garmin.client import _SLOW_CACHE_SECONDS
+
+        fetched, value = client._slow_cache["lifetime_totals"]
+        client._slow_cache["lifetime_totals"] = (
+            fetched - _SLOW_CACHE_SECONDS - 1,
+            value,
+        )
+        lifetime.side_effect = None
+        lifetime.return_value = {"totalSteps": 1}
+        data = await client.fetch_goals_data()
+        assert data["lifetimeTotalsHidden"] is False
+        assert data["lifetimeTotals"] == {"totalSteps": 1}
+
+    async def test_other_errors_are_retried_next_poll(self):
+        lifetime = AsyncMock(side_effect=GarminAPIError("Request failed: 500", 500))
+        client = self._goals_client(lifetime)
+        for _ in range(2):
+            data = await client.fetch_goals_data()
+            assert data["lifetimeTotalsHidden"] is False
+        assert lifetime.await_count == 2
