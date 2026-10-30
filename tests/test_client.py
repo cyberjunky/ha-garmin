@@ -3652,25 +3652,17 @@ class TestLifetimeTotals:
             assert data["lifetimeTotalsHidden"] is False
         lifetime.assert_awaited_once()
 
-    async def test_403_reports_hidden_and_is_rechecked_hourly(self, caplog):
+    async def test_403_reports_hidden_and_is_asked_again_next_poll(self, caplog):
         lifetime = AsyncMock(side_effect=GarminAPIError("Request failed: 403", 403))
         client = self._goals_client(lifetime)
         for _ in range(2):
             data = await client.fetch_goals_data()
             assert data["lifetimeTotals"] == {}
             assert data["lifetimeTotalsHidden"] is True
-        lifetime.assert_awaited_once()
+        assert lifetime.await_count == 2
         assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
-        # An hour later Garmin is asked again; showing the totals clears the flag.
-        # (Expire relative to now: a fresh CI runner's monotonic clock is < 1 h.)
-        from ha_garmin.client import _SLOW_CACHE_SECONDS
-
-        fetched, value = client._slow_cache["lifetime_totals"]
-        client._slow_cache["lifetime_totals"] = (
-            fetched - _SLOW_CACHE_SECONDS - 1,
-            value,
-        )
+        # Once the profile shows them, the next poll has the totals.
         lifetime.side_effect = None
         lifetime.return_value = {"totalSteps": 1}
         data = await client.fetch_goals_data()
