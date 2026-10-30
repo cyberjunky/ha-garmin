@@ -2115,6 +2115,18 @@ class GarminClient:
         self._learn_utc_offset(data)
         return data
 
+    async def get_daily_summary(self, target_date: date) -> dict[str, Any]:
+        """Get Garmin's daily summary for any date, as Garmin returns it.
+
+        Steps, distance, calories, heart rate, stress, Body Battery,
+        intensity minutes, respiration and floors for that day; one API call.
+        For a past day this is the final summary, including data the watch
+        synced after midnight.
+        """
+        if not isinstance(target_date, date):
+            raise ValueError(f"target_date must be a date, got {target_date!r}")
+        return await self._get_user_summary_raw(target_date)
+
     async def _get_sleep_data_raw(
         self, target_date: date | None = None
     ) -> dict[str, Any]:

@@ -3482,3 +3482,22 @@ class TestTrainingStatusLabel:
             }
         )
         assert result["trainingStatusPhrase"] == "Overreaching"
+
+
+class TestGetDailySummary:
+    async def test_returns_summary_for_the_given_date(self):
+        client = GarminClient(_make_auth())
+        with patch.object(
+            client,
+            "_get_user_summary_raw",
+            new_callable=AsyncMock,
+            return_value={"calendarDate": "2026-10-29", "averageStressLevel": 45},
+        ) as raw:
+            result = await client.get_daily_summary(date(2026, 10, 29))
+        raw.assert_awaited_once_with(date(2026, 10, 29))
+        assert result["averageStressLevel"] == 45
+
+    async def test_rejects_a_non_date(self):
+        client = GarminClient(_make_auth())
+        with pytest.raises(ValueError, match="must be a date"):
+            await client.get_daily_summary("2026-10-29")
