@@ -118,7 +118,7 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 | `fetch_body_data()` | 3 | Weight, BMI, body fat, hydration, fitness age |
 | `fetch_activity_data()` | 7+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts, with steps and targets for today's and the next one), upcoming events and the plan goal event |
 | `fetch_training_data()` | 8+ | Training readiness, status, VO2 Max (running and cycling), heat/altitude acclimation, HRV, lactate, endurance/hill scores, power-to-weight |
-| `fetch_goals_data()` | 5 | Goals (active/future/history), badges, user level, lifetime totals |
+| `fetch_goals_data(lifetime_totals=True)` | 4–5 | Goals (active/future/history), badges, user level, lifetime totals (at most hourly; `lifetimeTotalsHidden` when the profile hides them; skip with `lifetime_totals=False`) |
 | `fetch_gear_data()` | 6+ | Gear items with usage totals and notes (gear v2, no per-item stats calls), device alarms, solar intensity (daily avg + gain), devices, last sync, paired sensors |
 | `fetch_blood_pressure_data()` | 1 | Blood pressure measurements |
 | `fetch_menstrual_data()` | 2 | Menstrual cycle data |
@@ -190,7 +190,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_power_to_weight(target_date)` | FTP / power-to-weight data |
 | `get_goals()` | User goals by status |
 | `get_earned_badges()` | Earned badges |
-| `get_lifetime_totals()` | Lifetime distance, steps, calories and active days |
+| `get_lifetime_totals()` | Lifetime distance, steps, calories and active days. Garmin answers 403 unless "Lifetime Totals" is shown in the user's Garmin Connect profile (Account Settings → Public Profile → Show in profile; the profile can stay private) |
 | `get_gear_list()` | Active and retired gear with usage totals and notes (gear v2) |
 | `get_gear_details(gear_uuid)` | One piece of gear, including its default activity types (gear v2) |
 | `get_gear_defaults()` | Default gear settings |

@@ -12,7 +12,7 @@ import ssl
 import time
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from datetime import timezone as fixed_timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote, unquote, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -3524,11 +3524,16 @@ class GarminClient:
         }
         return _add_computed_fields(data)
 
-    async def fetch_goals_data(self) -> dict[str, Any]:
+    async def fetch_goals_data(self, *, lifetime_totals: bool = True) -> dict[str, Any]:
         """Fetch goals data: goals, badges, lifetime totals.
 
+        lifetimeTotalsHidden is True when Garmin refused the lifetime totals
+        because they aren't shown in the user's profile (see
+        _lifetime_totals); lifetimeTotals is then empty.
+
         API calls: get_goals×3, get_earned_badges (4 calls), plus
-                   get_lifetime_totals at most once an hour
+                   get_lifetime_totals at most once an hour unless
+                   lifetime_totals is False
         """
         active_goals = await self._safe_call(self.get_goals, "active")
         future_goals = await self._safe_call(self.get_goals, "future")
@@ -3582,11 +3587,36 @@ class GarminClient:
             "badges": badges,
             "userPoints": user_points,
             "userLevel": user_level,
-            "lifetimeTotals": await self._cached_safe_call(
-                "lifetime_totals", self.get_lifetime_totals
-            )
-            or {},
+            **(
+                await self._lifetime_totals()
+                if lifetime_totals
+                else {"lifetimeTotals": {}, "lifetimeTotalsHidden": False}
+            ),
         }
+
+    async def _lifetime_totals(self) -> dict[str, Any]:
+        """Lifetime totals and whether Garmin hides them, checked at most hourly.
+
+        Garmin answers 403 unless "Lifetime Totals" is shown in the user's
+        profile (Account Settings > Public Profile > Show in profile; the
+        profile can stay private). That answer is as stable as a result, so it
+        is cached the same way; other failures are retried on the next poll.
+        """
+        cached = self._slow_cache.get("lifetime_totals")
+        if cached and time.monotonic() - cached[0] < _SLOW_CACHE_SECONDS:
+            return cast(dict[str, Any], cached[1])
+        try:
+            totals = await self.get_lifetime_totals()
+        except GarminAPIError as err:
+            if err.status_code != 403:
+                _LOGGER.warning("API call get_lifetime_totals failed: %s", err)
+                return {"lifetimeTotals": {}, "lifetimeTotalsHidden": False}
+            _LOGGER.debug("Lifetime totals not shown in the Garmin profile: %s", err)
+            result = {"lifetimeTotals": {}, "lifetimeTotalsHidden": True}
+        else:
+            result = {"lifetimeTotals": totals, "lifetimeTotalsHidden": False}
+        self._slow_cache["lifetime_totals"] = (time.monotonic(), result)
+        return result
 
     async def fetch_gear_data(self, timezone: str | None = None) -> dict[str, Any]:
         """Fetch gear data: gear, defaults, stats, alarms, solar, devices, sensors.
