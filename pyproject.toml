@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ha-garmin"
-version = "0.1.53"
+version = "0.1.54"
 description = "Python client for Garmin Connect API"
 readme = "README.md"
 license = "MIT"
