@@ -3671,12 +3671,13 @@ class GarminClient:
         }
 
     async def _lifetime_totals(self) -> dict[str, Any]:
-        """Lifetime totals and whether Garmin hides them, checked at most hourly.
+        """Lifetime totals, and whether Garmin hides them.
 
         Garmin answers 403 unless "Lifetime Totals" is shown in the user's
         profile (Account Settings > Public Profile > Show in profile; the
-        profile can stay private). That answer is as stable as a result, so it
-        is cached the same way; other failures are retried on the next poll.
+        profile can stay private); that is reported as lifetimeTotalsHidden.
+        Only real totals are cached (hourly): a hidden or failed answer is
+        asked again on the next poll, so changing the setting shows at once.
         """
         cached = self._slow_cache.get("lifetime_totals")
         if cached and time.monotonic() - cached[0] < _SLOW_CACHE_SECONDS:
@@ -3684,13 +3685,11 @@ class GarminClient:
         try:
             totals = await self.get_lifetime_totals()
         except GarminAPIError as err:
-            if err.status_code != 403:
-                _LOGGER.warning("API call get_lifetime_totals failed: %s", err)
-                return {"lifetimeTotals": {}, "lifetimeTotalsHidden": False}
-            _LOGGER.debug("Lifetime totals not shown in the Garmin profile: %s", err)
-            result = {"lifetimeTotals": {}, "lifetimeTotalsHidden": True}
-        else:
-            result = {"lifetimeTotals": totals, "lifetimeTotalsHidden": False}
+            if err.status_code == 403:
+                return {"lifetimeTotals": {}, "lifetimeTotalsHidden": True}
+            _LOGGER.warning("API call get_lifetime_totals failed: %s", err)
+            return {"lifetimeTotals": {}, "lifetimeTotalsHidden": False}
+        result = {"lifetimeTotals": totals, "lifetimeTotalsHidden": False}
         self._slow_cache["lifetime_totals"] = (time.monotonic(), result)
         return result
 
