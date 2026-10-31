@@ -221,6 +221,15 @@ The library automatically adds computed fields for convenience:
 - **Skin temperature**: `avgSkinTempDeviationC` is the nightly change from your baseline, not an absolute temperature
 - **Sanity checks**: a `metabolicAge` that can't be an age in years is returned as `None`
 
+## Community
+
+Questions, ideas or just want to chat? Join The Junkyard on Discord:
+
+<a href="https://discord.gg/hUBQxRhJCU">
+  <img src="https://raw.githubusercontent.com/cyberjunky/cyberjunky/main/assets/junkyard-discord.svg"
+       alt="Join The Junkyard on Discord" width="600">
+</a>
+
 ## License
 
 MIT
