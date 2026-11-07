@@ -1395,6 +1395,12 @@ class TestGarminClient:
             },
             "restlessMomentsCount": 50,
             "bodyBatteryChange": 48,
+            "sleepStress": [
+                {"startGMT": 1775944800000, "value": 18.0},
+                {"startGMT": 1775944980000, "value": -1.0},
+                {"startGMT": 1775945160000, "value": 22.0},
+                {"startGMT": None, "value": 5.0},
+            ],
             "skinTempDataExists": True,
             "avgSkinTempDeviationC": 0.2,
             "avgSkinTempDeviationF": 0.3,
@@ -1443,6 +1449,11 @@ class TestGarminClient:
         assert data["awakeCount"] == 2
         assert data["restlessMomentsCount"] == 50
         assert data["sleepBodyBatteryChange"] == 48
+        # Unmeasured (negative) and malformed samples are dropped.
+        assert data["sleepStress"] == [
+            {"time": datetime(2026, 4, 11, 22, 0, tzinfo=UTC), "value": 18.0},
+            {"time": datetime(2026, 4, 11, 22, 6, tzinfo=UTC), "value": 22.0},
+        ]
         assert data["sleepScores"]["overall"]["qualifierKey"] == "GOOD"
         assert data["sleepScores"]["stress"] == {
             "qualifierKey": "FAIR",
@@ -1521,6 +1532,7 @@ class TestGarminClient:
         assert data["restlessMomentsCount"] is None
         assert data["avgSleepHeartRate"] is None
         assert data["sleepBodyBatteryChange"] is None
+        assert data["sleepStress"] == []
         assert data["sleepScores"] == {"overall": {"value": 84}}
         assert data["sleepScoreFeedback"] is None
 
