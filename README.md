@@ -219,6 +219,7 @@ The library automatically adds computed fields for convenience:
 - **VO2 Max**: training status (running, else cycling), then profile settings, then recent activities
 - **Training plan goal**: the plan's goal event, else the upcoming (primary) race on your calendar
 - **Skin temperature**: `avgSkinTempDeviationC` is the nightly change from your baseline, not an absolute temperature
+- **Sleep stress**: `sleepStress` is the overnight series as `[{time, value}]` with UTC datetimes; samples Garmin could not measure are dropped
 - **Sanity checks**: a `metabolicAge` that can't be an age in years is returned as `None`
 
 ## Community
