@@ -818,6 +818,30 @@ def _local_timestamp_ms_to_datetime(
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=UTC)
 
 
+def _sleep_stress_series(raw: Any) -> list[dict[str, Any]]:
+    """Simplify the sleep response's stress samples to [{time, value}].
+
+    Garmin reports one sample per few minutes with an epoch-ms startGMT;
+    negative values mark samples it could not measure and are dropped.
+    """
+    if not isinstance(raw, list):
+        return []
+    series = []
+    for sample in raw:
+        if not isinstance(sample, dict):
+            continue
+        start = sample.get("startGMT")
+        value = sample.get("value")
+        if not isinstance(start, int | float) or not isinstance(value, int | float):
+            continue
+        if value < 0:
+            continue
+        series.append(
+            {"time": datetime.fromtimestamp(start / 1000, tz=UTC), "value": value}
+        )
+    return series
+
+
 def _project_time_of_day_to_date(
     target_date: date | None,
     timestamp_ms: int | float | None,
@@ -3167,6 +3191,7 @@ class GarminClient:
         restless_moments_count = None
         avg_sleep_heart_rate = None
         sleep_body_battery_change = None
+        sleep_stress = None
         sleep_scores = None
         sleep_score_feedback = None
         sleep_score_insight = None
@@ -3184,6 +3209,7 @@ class GarminClient:
             # at the root of the response, next to their time series.
             restless_moments_count = sleep_data.get("restlessMomentsCount")
             sleep_body_battery_change = sleep_data.get("bodyBatteryChange")
+            sleep_stress = _sleep_stress_series(sleep_data.get("sleepStress"))
             try:
                 daily_sleep = sleep_data.get("dailySleepDTO") or {}
                 sleep_alignment = daily_sleep.get("sleepAlignment") or {}
@@ -3300,6 +3326,7 @@ class GarminClient:
             "restlessMomentsCount": restless_moments_count,
             "avgSleepHeartRate": avg_sleep_heart_rate,
             "sleepBodyBatteryChange": sleep_body_battery_change,
+            "sleepStress": sleep_stress,
             "sleepScores": sleep_scores,
             "sleepScoreFeedback": sleep_score_feedback,
             "sleepScoreInsight": sleep_score_insight,
