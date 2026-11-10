@@ -96,7 +96,6 @@ class TestGarminAuth:
             patch.object(auth, "_mobile_login_requests", side_effect=strategy),
             patch.object(auth, "_widget_web_login", side_effect=strategy),
             patch.object(auth, "_portal_web_login_cffi", side_effect=strategy),
-            patch.object(auth, "_portal_web_login_requests", side_effect=strategy),
             patch(
                 "ha_garmin.auth.cffi_requests.get",
                 return_value=MagicMock(status_code=status),
@@ -161,9 +160,6 @@ class TestGarminAuth:
             patch.object(auth, "_mobile_login_requests", side_effect=second_strategy),
             patch.object(auth, "_widget_web_login", side_effect=first_strategy),
             patch.object(auth, "_portal_web_login_cffi", side_effect=second_strategy),
-            patch.object(
-                auth, "_portal_web_login_requests", side_effect=second_strategy
-            ),
             patch.object(
                 auth, "_verify_token", side_effect=lambda: next(verify_results)
             ),
@@ -569,7 +565,6 @@ class TestSecurityAuditHardening:
             patch.object(auth, "_mobile_login_requests", side_effect=fail),
             patch.object(auth, "_widget_web_login", side_effect=fail),
             patch.object(auth, "_portal_web_login_cffi", side_effect=fail),
-            patch.object(auth, "_portal_web_login_requests", side_effect=fail),
             pytest.raises(GarminAPIError, match="exhausted"),
         ):
             auth.login("u@x.com", "pw")
@@ -590,7 +585,6 @@ class TestSecurityAuditHardening:
             patch.object(auth, "_mobile_login_requests", side_effect=boom),
             patch.object(auth, "_widget_web_login", side_effect=boom),
             patch.object(auth, "_portal_web_login_cffi", side_effect=boom),
-            patch.object(auth, "_portal_web_login_requests", side_effect=boom),
             caplog.at_level("DEBUG", logger="ha_garmin.auth"),
             pytest.raises(GarminAPIError, match="exhausted") as exc_info,
         ):
@@ -609,7 +603,6 @@ class TestSecurityAuditHardening:
             patch.object(auth, "_mobile_login_requests", side_effect=boom),
             patch.object(auth, "_widget_web_login", side_effect=boom),
             patch.object(auth, "_portal_web_login_cffi", side_effect=boom),
-            patch.object(auth, "_portal_web_login_requests", side_effect=boom),
             caplog.at_level("WARNING", logger="ha_garmin.auth"),
             pytest.raises(GarminAPIError, match="ConnectionError; ") as exc_info,
         ):
@@ -639,3 +632,76 @@ def test_di_exchange_failure_log_omits_response_body(caplog):
         auth._exchange_service_ticket("ST-CANARY-TICKET-123")
     assert "HTTP 400" in caplog.text
     assert "ST-CANARY-TICKET-123" not in caplog.text
+
+
+# ── Refresh hardening ─────────────────────────────────────────────────────────
+
+
+def _refresh_auth() -> GarminAuth:
+    auth = GarminAuth()
+    auth.di_token = "old_token"
+    auth.di_refresh_token = "refresh"
+    auth.di_client_id = "CID"
+    return auth
+
+
+async def test_concurrent_401s_refresh_once() -> None:
+    """Requests refused with the same token share one refresh."""
+    import asyncio
+
+    auth = _refresh_auth()
+    reply = MagicMock(ok=True, status_code=200)
+    reply.json.return_value = {"access_token": "new_token"}
+    with patch("ha_garmin.auth._http_post", return_value=reply) as post:
+        results = await asyncio.gather(
+            *(auth.refresh_session(rejected_token="old_token") for _ in range(3))
+        )
+    assert results == [True, True, True]
+    assert auth.di_token == "new_token"
+    post.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "json_result",
+    [ValueError("not JSON"), {}],
+    ids=["non-json", "no-access-token"],
+)
+async def test_refresh_without_access_token_is_transient(json_result) -> None:
+    """A 200 without a token is a Garmin glitch, not a refused refresh token."""
+    from ha_garmin.exceptions import GarminConnectionError
+
+    auth = _refresh_auth()
+    reply = MagicMock(ok=True, status_code=200)
+    if isinstance(json_result, Exception):
+        reply.json.side_effect = json_result
+    else:
+        reply.json.return_value = json_result
+    with patch("ha_garmin.auth._http_post", return_value=reply):
+        assert await auth.refresh_session() is False
+    assert isinstance(auth.last_refresh_exception, GarminConnectionError)
+    assert auth.di_token == "old_token"
+
+
+@pytest.mark.parametrize("flow", ["mobile", "portal"])
+async def test_captcha_required_counts_as_blocked(flow: str) -> None:
+    """CAPTCHA_REQUIRED means this client is blocked, like a 429, not an unknown reply."""
+    from ha_garmin.exceptions import GarminRateLimitError
+
+    auth = GarminAuth()
+    sess = MagicMock()
+    sess.get.return_value = MagicMock(status_code=200, text="<html/>")
+    sess.post.return_value = MagicMock(status_code=200)
+    sess.post.return_value.json.return_value = {
+        "responseStatus": {"type": "CAPTCHA_REQUIRED"}
+    }
+    login = auth._do_mobile_login if flow == "mobile" else auth._do_portal_web_login
+    with (
+        patch("ha_garmin.auth.time.sleep"),
+        pytest.raises(GarminRateLimitError, match="CAPTCHA"),
+    ):
+        login(sess, "u@x.com", "pw")
+
+
+def test_no_plain_requests_portal_strategy() -> None:
+    """The portal blocks plain requests sessions, so that strategy is gone."""
+    assert not hasattr(GarminAuth, "_portal_web_login_requests")

@@ -1411,12 +1411,13 @@ class GarminClient:
             return sess.request(method, url, params=params, headers=headers, timeout=15)
 
         try:
+            sent_token = self._auth.di_token
             response = await asyncio.to_thread(_do_request)
 
             # Handle 401 - session expired, try refresh
             if response.status_code == 401:
                 _LOGGER.debug("Session expired, refreshing")
-                refreshed = await self._auth.refresh_session()
+                refreshed = await self._auth.refresh_session(rejected_token=sent_token)
                 if not refreshed:
                     raise self._session_expired_error()
                 headers = self._auth.get_api_headers()
@@ -1518,11 +1519,12 @@ class GarminClient:
         def _do_request(hdrs: dict[str, str]) -> Any:
             return stdlib_requests.get(full_url, headers=hdrs, timeout=60)
 
+        sent_token = self._auth.di_token
         response = await _send(full_url, _do_request, _headers())
 
         if response.status_code == 401:
             _LOGGER.debug("Session expired, refreshing")
-            if not await self._auth.refresh_session():
+            if not await self._auth.refresh_session(rejected_token=sent_token):
                 raise self._session_expired_error()
             response = await _send(full_url, _do_request, _headers())
 
@@ -2336,6 +2338,16 @@ class GarminClient:
 
     # ========== Write/Service Methods ==========
 
+    @staticmethod
+    def _json_body(response: Any, what: str) -> dict[str, Any]:
+        """Parse a write call's JSON body; a non-JSON 2xx is an API error."""
+        try:
+            return cast(dict[str, Any], response.json())
+        except ValueError as err:
+            raise GarminAPIError(
+                f"{what}: invalid JSON response", response.status_code
+            ) from err
+
     async def _post_request(
         self,
         url: str,
@@ -2362,11 +2374,12 @@ class GarminClient:
                 full_url, headers=hdrs, json=json_data, timeout=30
             )
 
+        sent_token = self._auth.di_token
         response = await _send(full_url, _do_post, headers)
 
         if response.status_code == 401:
             _LOGGER.debug("401 on POST - attempting token refresh")
-            refreshed = await self._auth.refresh_session()
+            refreshed = await self._auth.refresh_session(rejected_token=sent_token)
             if not refreshed:
                 raise self._session_expired_error()
             headers = self._auth.get_api_headers()
@@ -2383,7 +2396,7 @@ class GarminClient:
         if response.status_code == 204:
             return {}
 
-        return response.json()
+        return self._json_body(response, "POST")
 
     async def _put_request(
         self,
@@ -2412,11 +2425,12 @@ class GarminClient:
                 full_url, headers=hdrs, json=json_data, timeout=30
             )
 
+        sent_token = self._auth.di_token
         response = await _send(full_url, _do_put, headers)
 
         if response.status_code == 401:
             _LOGGER.debug("401 on PUT - attempting token refresh")
-            refreshed = await self._auth.refresh_session()
+            refreshed = await self._auth.refresh_session(rejected_token=sent_token)
             if not refreshed:
                 raise self._session_expired_error()
             headers = self._auth.get_api_headers()
@@ -2433,11 +2447,15 @@ class GarminClient:
         if response.status_code == 204:
             return {}
 
-        return response.json()
+        return self._json_body(response, "PUT")
 
     async def _delete_request(self, url: str) -> dict[str, Any]:
         """Make a DELETE request to the Garmin API."""
         import requests as stdlib_requests
+
+        if not self._auth.is_authenticated:
+            raise GarminAuthError("Not authenticated")
+        await self._ensure_token_fresh()
 
         headers = self._auth.get_api_headers()
         headers.update(DEFAULT_HEADERS)
@@ -2449,20 +2467,15 @@ class GarminClient:
         def _do_delete(hdrs: dict[str, str]) -> Any:
             return stdlib_requests.delete(full_url, headers=hdrs, timeout=30)
 
+        sent_token = self._auth.di_token
         response = await _send(full_url, _do_delete, headers)
 
         if response.status_code == 401:
-            await self._auth.refresh_session()
+            if not await self._auth.refresh_session(rejected_token=sent_token):
+                raise self._session_expired_error()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             response = await _send(full_url, _do_delete, headers)
-            if response.status_code not in (200, 204):
-                raise GarminAPIError(
-                    f"DELETE failed: {response.status_code}", response.status_code
-                )
-            if response.status_code == 204:
-                return {}
-            return response.json()
 
         if response.status_code not in (200, 204):
             raise GarminAPIError(
@@ -2472,7 +2485,7 @@ class GarminClient:
         if response.status_code == 204:
             return {}
 
-        return response.json()
+        return self._json_body(response, "DELETE")
 
     async def _upload_fit_file(
         self, fit_data: bytes, filename: str = "data.fit"
@@ -2484,6 +2497,10 @@ class GarminClient:
             filename: Name for the upload
         """
         import requests as stdlib_requests
+
+        if not self._auth.is_authenticated:
+            raise GarminAuthError("Not authenticated")
+        await self._ensure_token_fresh()
 
         headers = self._auth.get_api_headers()
         headers.update(DEFAULT_HEADERS)
@@ -2501,24 +2518,22 @@ class GarminClient:
             }
             return stdlib_requests.post(full_url, headers=hdrs, files=files, timeout=60)
 
+        sent_token = self._auth.di_token
         response = await _send(full_url, _do_upload, headers)
 
         if response.status_code == 401:
-            await self._auth.refresh_session()
+            if not await self._auth.refresh_session(rejected_token=sent_token):
+                raise self._session_expired_error()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             response = await _send(full_url, _do_upload, headers)
-            if response.status_code not in (200, 201):
-                raise GarminAPIError(
-                    f"FIT upload failed: {response.status_code}", response.status_code
-                )
 
         if response.status_code not in (200, 201):
             raise GarminAPIError(
                 f"FIT upload failed: {response.status_code}", response.status_code
             )
 
-        return response.json()
+        return self._json_body(response, "FIT upload")
 
     async def set_blood_pressure(
         self,
@@ -3031,11 +3046,12 @@ class GarminClient:
             files = {"file": (_sanitize_filename(path.name), file_bytes, content_type)}
             return stdlib_requests.post(full_url, headers=hdrs, files=files, timeout=60)
 
+        sent_token = self._auth.di_token
         response = await _send(full_url, _do_upload, headers)
 
         if response.status_code == 403:
             _LOGGER.debug("Upload got 403, refreshing token and retrying")
-            await self._auth.refresh_session()
+            await self._auth.refresh_session(rejected_token=sent_token)
             headers = self._auth.get_api_headers()
             headers["User-Agent"] = "GCM-iOS-5.7.2.1"
             response = await _send(full_url, _do_upload, headers)

@@ -387,14 +387,13 @@ class GarminAuth:
         # CN SSO does not support the mobile API endpoint, so web-based
         # strategies must run first.  For .com accounts the mobile strategies
         # stay at the front because they bypass Cloudflare more reliably.
+        # There is no plain-requests portal strategy: the portal answers
+        # clients without a browser TLS fingerprint with a Cloudflare 403 or
+        # CAPTCHA_REQUIRED, so it could only add its 30-45 s delay.
         if self._is_cn:
             strategies: list[tuple[str, Any]] = [
                 ("widget+cffi", lambda: self._widget_web_login(email, password)),
                 ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
-                (
-                    "portal+requests",
-                    lambda: self._portal_web_login_requests(email, password),
-                ),
                 ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
                 (
                     "mobile+requests",
@@ -410,10 +409,6 @@ class GarminAuth:
                 ),
                 ("widget+cffi", lambda: self._widget_web_login(email, password)),
                 ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
-                (
-                    "portal+requests",
-                    lambda: self._portal_web_login_requests(email, password),
-                ),
             ]
 
         last_err: Exception | None = None
@@ -614,6 +609,11 @@ class GarminAuth:
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
+
+        if resp_type == "CAPTCHA_REQUIRED":
+            # Garmin wants a CAPTCHA this client can't solve: blocked, like a
+            # 429, so the next strategy is tried and the summary says so.
+            raise GarminRateLimitError("Login blocked: Garmin requires a CAPTCHA")
 
         # Check for 429 buried inside JSON error body
         if res.get("error", {}).get("status-code") == "429":
@@ -891,17 +891,6 @@ class GarminAuth:
         raise GarminAPIError("portal+cffi: no impersonations available")
 
     # ------------------------------------------------------------------ #
-    #  STRATEGY 5 — Portal web + plain requests                          #
-    # ------------------------------------------------------------------ #
-
-    def _portal_web_login_requests(self, email: str, password: str) -> AuthResult:
-        """Portal login with plain requests (no TLS fingerprinting)."""
-        import requests as stdlib_requests
-
-        sess = stdlib_requests.Session()
-        return self._do_portal_web_login(sess, email, password)
-
-    # ------------------------------------------------------------------ #
     #  Shared portal login logic                                          #
     # ------------------------------------------------------------------ #
 
@@ -1004,6 +993,11 @@ class GarminAuth:
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
+
+        if resp_type == "CAPTCHA_REQUIRED":
+            # Garmin wants a CAPTCHA this client can't solve: blocked, like a
+            # 429, so the next strategy is tried and the summary says so.
+            raise GarminRateLimitError("Login blocked: Garmin requires a CAPTCHA")
 
         # Check for 429 buried inside JSON error body
         if res.get("error", {}).get("status-code") == "429":
@@ -1269,22 +1263,36 @@ class GarminAuth:
             )
         if not r.ok:
             raise GarminAuthError(f"DI token refresh failed: HTTP {r.status_code}")
-        data = r.json()
-        self.di_token = data["access_token"]
+        try:
+            data = r.json()
+            access_token = data["access_token"]
+        except (ValueError, KeyError, TypeError) as err:
+            # Garmin answered 200 without a token: a server-side glitch, not a
+            # refused refresh token, so the stored tokens stay usable.
+            raise GarminConnectionError(
+                "DI token refresh failed: response without an access token"
+            ) from err
+        self.di_token = access_token
         self.di_refresh_token = data.get("refresh_token", self.di_refresh_token)
         self.di_client_id = (
             self._extract_client_id_from_jwt(self.di_token) or self.di_client_id
         )
 
-    async def refresh_session(self) -> bool:
-        """Refresh DI Bearer token using the stored refresh token."""
+    async def refresh_session(self, rejected_token: str | None = None) -> bool:
+        """Refresh DI Bearer token using the stored refresh token.
+
+        ``rejected_token`` is the token a request was refused with. When
+        several requests get a 401 at once, the first refreshes; the others
+        find a different token once they hold the lock and reuse it instead of
+        refreshing again.
+        """
         import asyncio
 
         if not self.is_authenticated:
             return False
 
         try:
-            await asyncio.to_thread(self._refresh_with_lock)
+            await asyncio.to_thread(self._refresh_with_lock, rejected_token)
         except Exception as err:
             self.last_refresh_error = _sanitize_exception_text(err)
             self.last_refresh_exception = err
@@ -1304,9 +1312,15 @@ class GarminAuth:
             if self._token_expires_soon():
                 self._refresh_with_lock()
 
-    def _refresh_with_lock(self) -> None:
-        """Synchronous token refresh guarded by the instance token lock."""
+    def _refresh_with_lock(self, rejected_token: str | None = None) -> None:
+        """Synchronous token refresh guarded by the instance token lock.
+
+        Skipped when ``rejected_token`` is given and another caller already
+        replaced it while this one waited for the lock.
+        """
         with self._token_lock:
+            if rejected_token is not None and self.di_token != rejected_token:
+                return
             self._refresh_di_token()
             if self._tokenstore_path:
                 self._persist_tokens(self._tokenstore_path)
