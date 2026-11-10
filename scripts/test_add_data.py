@@ -38,6 +38,7 @@ MENU = [
     ("Body composition", "body_composition"),
     ("Create manual activity", "create_activity"),
     ("Upload activity file", "upload_activity"),
+    ("Download activity file", "download_activity"),
 ]
 
 
@@ -184,6 +185,63 @@ async def do_upload_activity(client: GarminClient) -> None:
     _print_result(result)
 
 
+DOWNLOAD_DIR = Path(__file__).resolve().parent.parent / "downloads"
+DOWNLOAD_FORMATS = {
+    "fit": "fit",
+    "original": "zip",
+    "tcx": "tcx",
+    "gpx": "gpx",
+    "kml": "kml",
+    "csv": "csv",
+}
+
+
+def _looks_like(fmt: str, content: bytes) -> bool:
+    """Cheap check that the bytes are the format asked for."""
+    if fmt == "fit":
+        return len(content) > 12 and content[8:12] == b".FIT"
+    if fmt == "original":
+        return content[:2] == b"PK"
+    if fmt in ("tcx", "gpx", "kml"):
+        return content.lstrip()[:5] == b"<?xml" or content.lstrip()[:1] == b"<"
+    return bool(content)
+
+
+async def do_download_activity(client: GarminClient) -> None:
+    """Download one of the recent activities in a chosen format."""
+    print("\n--- Download Activity File ---")
+    activities = await client.get_activities(limit=5)
+    for i, activity in enumerate(activities, 1):
+        print(
+            f"  {i}. {activity.get('activityId')}  "
+            f"{activity.get('startTime')}  {activity.get('activityName')}"
+        )
+    choice = await ainput("Number from the list, or an activity ID [1]: ") or "1"
+    if choice.isdigit() and 1 <= int(choice) <= len(activities):
+        activity_id = int(activities[int(choice) - 1]["activityId"])
+    elif choice.isdigit():
+        activity_id = int(choice)
+    else:
+        print("Not a number, skipping.")
+        return
+
+    fmt = (await ainput(f"Format {list(DOWNLOAD_FORMATS)} [fit]: ") or "fit").lower()
+    if fmt not in DOWNLOAD_FORMATS:
+        print(f"Unknown format {fmt!r}, skipping.")
+        return
+
+    content = await client.download_activity(activity_id, fmt)
+    path = DOWNLOAD_DIR / f"activity_{activity_id}.{DOWNLOAD_FORMATS[fmt]}"
+
+    def _write() -> None:
+        DOWNLOAD_DIR.mkdir(exist_ok=True)
+        path.write_bytes(content)
+
+    await asyncio.to_thread(_write)
+    check = "looks valid" if _looks_like(fmt, content) else "UNEXPECTED CONTENT"
+    print(f"\nSaved {len(content)} bytes to {path} ({check})")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -201,6 +259,7 @@ HANDLERS = {
     "body_composition": do_body_composition,
     "create_activity": do_create_activity,
     "upload_activity": do_upload_activity,
+    "download_activity": do_download_activity,
 }
 
 
