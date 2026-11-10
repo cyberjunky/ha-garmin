@@ -22,6 +22,7 @@ import asyncio
 import getpass
 import logging
 import os
+import sys
 import time
 
 from ha_garmin import GarminAuth
@@ -35,9 +36,28 @@ EMAIL = os.getenv("GARMIN_EMAIL", "")
 PASSWORD = os.getenv("GARMIN_PASSWORD", "")
 
 
+def _discard_typeahead() -> None:
+    """Drop keys pressed while waiting, so a stray Enter isn't read as the answer."""
+    if sys.stdin.isatty():
+        try:
+            import termios
+
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except (ImportError, OSError):  # not a POSIX terminal
+            pass
+
+
 async def ainput(prompt: str) -> str:
-    """input() off the event loop (stripped)."""
+    """input() off the event loop (stripped), ignoring earlier keypresses."""
+    _discard_typeahead()
     return (await asyncio.to_thread(input, prompt)).strip()
+
+
+async def ask_code(prompt: str) -> str:
+    """Ask until a non-empty MFA code is entered."""
+    while not (code := await ainput(prompt)):
+        print("  (empty code, try again)")
+    return code
 
 
 async def agetpass(prompt: str) -> str:
@@ -56,7 +76,7 @@ async def try_strategy(
         if skip_mfa:
             await auth.cancel_mfa()
             return "MFA", "reached the MFA step (code not entered)"
-        code = await ainput(f"  [{name}] MFA code: ")
+        code = await ask_code(f"  [{name}] MFA code: ")
         try:
             await auth.complete_mfa(code)
         except GarminAuthError as err:
