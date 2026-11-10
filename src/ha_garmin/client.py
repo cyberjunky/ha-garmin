@@ -8,7 +8,6 @@ import logging
 import math
 import numbers
 import re
-import ssl
 import time
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from datetime import timezone as fixed_timezone
@@ -74,67 +73,14 @@ from .exceptions import (
     GarminConnectError,
     GarminConnectionError,
     GarminRateLimitError,
-    GarminTLSError,
 )
+from .http import ApiTransport, HttpResponse
 from .models import UserProfile
 
 if TYPE_CHECKING:
+    import aiohttp
+
     from .auth import GarminAuth
-
-
-def _cert_verification_failure(err: BaseException) -> str | None:
-    """Return why certificate verification failed, or None for any other error.
-
-    requests wraps the ssl error several layers deep (SSLError -> MaxRetryError
-    -> urllib3 SSLError -> ssl.SSLCertVerificationError), linked through
-    ``__cause__``, ``reason`` or ``args`` depending on the layer.
-    """
-    seen: set[int] = set()
-    pending: list[Any] = [err]
-    while pending:
-        current = pending.pop()
-        if not isinstance(current, BaseException) or id(current) in seen:
-            continue
-        seen.add(id(current))
-        if isinstance(current, ssl.SSLCertVerificationError):
-            return current.verify_message or "certificate verify failed"
-        pending.extend(
-            (
-                current.__cause__,
-                current.__context__,
-                getattr(current, "reason", None),
-                *current.args,
-            )
-        )
-    if "CERTIFICATE_VERIFY_FAILED" in str(err):
-        return "certificate verify failed"
-    return None
-
-
-def _transport_error(err: BaseException, url: str) -> GarminConnectError:
-    """Map a transport failure (connection, DNS, timeout, TLS) to a library error."""
-    _LOGGER.debug("Request to %s failed: %s", url, err)
-    if (reason := _cert_verification_failure(err)) is not None:
-        host = urlsplit(url).hostname
-        return GarminTLSError(
-            f"TLS certificate for {host} could not be verified ({reason}). "
-            "The connection to Garmin is being intercepted or redirected "
-            "by a proxy, HTTPS inspection or DNS filter on this network; "
-            f"exclude {host} from it"
-        )
-    return GarminAPIError(f"Request failed: {err}")
-
-
-async def _send(url: str, func: Any, *args: Any) -> Any:
-    """Run a blocking HTTP call in a thread, mapping transport failures.
-
-    requests raises RequestException (an OSError) for connection, DNS and
-    timeout failures; callers expect GarminConnectError subclasses only.
-    """
-    try:
-        return await asyncio.to_thread(func, *args)
-    except OSError as err:
-        raise _transport_error(err, url) from err
 
 
 def _parse_connect_iq_value(raw: Any, precision: Any) -> Any:
@@ -1231,6 +1177,7 @@ class GarminClient:
         auth: GarminAuth,
         is_cn: bool = False,
         timezone: str | None = None,
+        session: aiohttp.ClientSession | None = None,
     ) -> None:
         """Initialize client.
 
@@ -1240,8 +1187,13 @@ class GarminClient:
             timezone: IANA zone (e.g. "Europe/Amsterdam") used for "today" and
                 default timestamps until the Garmin account's own UTC offset
                 is learned from a daily summary. Defaults to the system zone.
+            session: aiohttp session for the data API, e.g. Home Assistant's.
+                Without one the client creates its own; call ``close()`` (or
+                use ``async with``) to release it. An injected session is
+                never closed by the client.
         """
         self._auth = auth
+        self._http = ApiTransport(session)
         self._fallback_tz: ZoneInfo | None = None
         if timezone:
             try:
@@ -1264,6 +1216,16 @@ class GarminClient:
             self._EBIKE_FIELDS_EMPTY_RETRY_LIMIT
         )
         self._connect_iq_cache = _PerActivityCache(self._EBIKE_FIELDS_EMPTY_RETRY_LIMIT)
+
+    async def close(self) -> None:
+        """Release the HTTP session if the client created it."""
+        await self._http.close()
+
+    async def __aenter__(self) -> GarminClient:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        await self.close()
 
     def _local_tz(self) -> tzinfo:
         """Return the zone that defines the Garmin calendar day.
@@ -1330,20 +1292,11 @@ class GarminClient:
     async def _ensure_token_fresh(self) -> None:
         """Atomically check token expiry and refresh if needed.
 
-        Runs the check-then-refresh sequence under the auth object's token lock
-        in a thread so concurrent async tasks cannot trigger refresh with the
-        same refresh token.
+        The auth object runs the check-then-refresh sequence under its token
+        lock, so concurrent tasks cannot refresh with the same refresh token.
         """
-        if not self._auth._token_expires_soon():
-            return
-
-        def _check() -> None:
-            with self._auth._token_lock:
-                if self._auth._token_expires_soon():
-                    self._auth._refresh_with_lock()
-
         try:
-            await asyncio.to_thread(_check)
+            await self._auth.refresh_if_expiring()
         except (GarminConnectionError, GarminRateLimitError) as err:
             # Transient: the current token is still valid for a while, so
             # carry on with it. If it has already expired, the request gets
@@ -1377,17 +1330,15 @@ class GarminClient:
         params: dict[str, Any] | None = None,
         _retry_count: int = 0,
     ) -> dict[str, Any] | list[Any]:
-        """Make authenticated API request (in thread).
+        """Make authenticated API request.
 
-        Uses a plain requests.Session against connectapi.garmin.com directly
-        with DI Bearer token auth (bypasses Cloudflare).
+        Calls connectapi.garmin.com directly with DI Bearer token auth
+        (bypasses Cloudflare), on the injected or owned aiohttp session.
 
         Retries up to 3 times for:
         - 429 (Too Many Requests) - rate limited
         - 5xx (Server errors) - temporary Garmin issues
         """
-        import requests as stdlib_requests
-
         MAX_RETRIES = 3
         RETRY_DELAYS = [1, 2, 4]
 
@@ -1402,17 +1353,14 @@ class GarminClient:
         url = self._get_url(url)
         headers = self._auth.get_api_headers()
 
-        def _do_request() -> Any:
-            sess = stdlib_requests.Session()
-            adapter = stdlib_requests.adapters.HTTPAdapter(
-                pool_connections=20, pool_maxsize=20
+        async def _do_request() -> HttpResponse:
+            return await self._http.request(
+                method, url, params=params, headers=headers, timeout=15
             )
-            sess.mount("https://", adapter)
-            return sess.request(method, url, params=params, headers=headers, timeout=15)
 
+        sent_token = self._auth.di_token
         try:
-            sent_token = self._auth.di_token
-            response = await asyncio.to_thread(_do_request)
+            response = await _do_request()
 
             # Handle 401 - session expired, try refresh
             if response.status_code == 401:
@@ -1421,7 +1369,7 @@ class GarminClient:
                 if not refreshed:
                     raise self._session_expired_error()
                 headers = self._auth.get_api_headers()
-                response = await asyncio.to_thread(_do_request)
+                response = await _do_request()
                 if response.status_code not in (200, 204, 404):
                     raise GarminAPIError(
                         f"Request failed after refresh: {response.status_code}",
@@ -1492,8 +1440,8 @@ class GarminClient:
 
         except GarminConnectError:
             raise
-        except Exception as err:
-            raise _transport_error(err, url) from err
+        except ValueError as err:  # a 200 whose body isn't JSON
+            raise GarminAPIError(f"Invalid response from {url}: {err}") from err
 
     async def _request_bytes(self, url: str) -> bytes:
         """Make authenticated GET request returning raw response bytes.
@@ -1501,8 +1449,6 @@ class GarminClient:
         Used for file downloads (FIT/TCX/GPX exports) where the response
         is not JSON.
         """
-        import requests as stdlib_requests
-
         if not self._auth.is_authenticated:
             raise GarminAuthError("Not authenticated")
 
@@ -1516,17 +1462,17 @@ class GarminClient:
             # Download endpoints return 406 for Accept: application/json
             return {**self._auth.get_api_headers(), "Accept": "*/*"}
 
-        def _do_request(hdrs: dict[str, str]) -> Any:
-            return stdlib_requests.get(full_url, headers=hdrs, timeout=60)
+        async def _do_request(hdrs: dict[str, str]) -> HttpResponse:
+            return await self._http.request("GET", full_url, headers=hdrs, timeout=60)
 
         sent_token = self._auth.di_token
-        response = await _send(full_url, _do_request, _headers())
+        response = await _do_request(_headers())
 
         if response.status_code == 401:
             _LOGGER.debug("Session expired, refreshing")
             if not await self._auth.refresh_session(rejected_token=sent_token):
                 raise self._session_expired_error()
-            response = await _send(full_url, _do_request, _headers())
+            response = await _do_request(_headers())
 
         if response.status_code != 200:
             raise GarminAPIError(
@@ -2339,7 +2285,7 @@ class GarminClient:
     # ========== Write/Service Methods ==========
 
     @staticmethod
-    def _json_body(response: Any, what: str) -> dict[str, Any]:
+    def _json_body(response: HttpResponse, what: str) -> dict[str, Any]:
         """Parse a write call's JSON body; a non-JSON 2xx is an API error."""
         try:
             return cast(dict[str, Any], response.json())
@@ -2354,8 +2300,6 @@ class GarminClient:
         json_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make authenticated POST request."""
-        import requests as stdlib_requests
-
         if not self._auth.is_authenticated:
             raise GarminAuthError("Not authenticated")
         # Proactively refresh if token is expiring soon
@@ -2369,13 +2313,13 @@ class GarminClient:
         full_url = self._get_url(url)
         _LOGGER.debug("POST %s with payload: %s", full_url, json_data)
 
-        def _do_post(hdrs: dict[str, str]) -> Any:
-            return stdlib_requests.post(
-                full_url, headers=hdrs, json=json_data, timeout=30
+        async def _do_post(hdrs: dict[str, str]) -> HttpResponse:
+            return await self._http.request(
+                "POST", full_url, headers=hdrs, json=json_data, timeout=30
             )
 
         sent_token = self._auth.di_token
-        response = await _send(full_url, _do_post, headers)
+        response = await _do_post(headers)
 
         if response.status_code == 401:
             _LOGGER.debug("401 on POST - attempting token refresh")
@@ -2385,7 +2329,7 @@ class GarminClient:
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             headers["Content-Type"] = "application/json"
-            response = await _send(full_url, _do_post, headers)
+            response = await _do_post(headers)
 
         if response.status_code not in (200, 201, 204):
             _LOGGER.error("POST failed %s", response.status_code)
@@ -2404,8 +2348,6 @@ class GarminClient:
         json_data: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Make authenticated PUT request."""
-        import requests as stdlib_requests
-
         if not self._auth.is_authenticated:
             raise GarminAuthError("Not authenticated")
         # Proactively refresh if token is expiring soon
@@ -2420,13 +2362,13 @@ class GarminClient:
         full_url = self._get_url(url)
         _LOGGER.debug("PUT %s", full_url)
 
-        def _do_put(hdrs: dict[str, str]) -> Any:
-            return stdlib_requests.put(
-                full_url, headers=hdrs, json=json_data, timeout=30
+        async def _do_put(hdrs: dict[str, str]) -> HttpResponse:
+            return await self._http.request(
+                "PUT", full_url, headers=hdrs, json=json_data, timeout=30
             )
 
         sent_token = self._auth.di_token
-        response = await _send(full_url, _do_put, headers)
+        response = await _do_put(headers)
 
         if response.status_code == 401:
             _LOGGER.debug("401 on PUT - attempting token refresh")
@@ -2437,7 +2379,7 @@ class GarminClient:
             headers.update(DEFAULT_HEADERS)
             if json_data is not None:
                 headers["Content-Type"] = "application/json"
-            response = await _send(full_url, _do_put, headers)
+            response = await _do_put(headers)
 
         if response.status_code not in (200, 201, 204):
             raise GarminAPIError(
@@ -2451,8 +2393,6 @@ class GarminClient:
 
     async def _delete_request(self, url: str) -> dict[str, Any]:
         """Make a DELETE request to the Garmin API."""
-        import requests as stdlib_requests
-
         if not self._auth.is_authenticated:
             raise GarminAuthError("Not authenticated")
         await self._ensure_token_fresh()
@@ -2464,18 +2404,20 @@ class GarminClient:
         full_url = self._get_url(url)
         _LOGGER.debug("DELETE %s", full_url)
 
-        def _do_delete(hdrs: dict[str, str]) -> Any:
-            return stdlib_requests.delete(full_url, headers=hdrs, timeout=30)
+        async def _do_delete(hdrs: dict[str, str]) -> HttpResponse:
+            return await self._http.request(
+                "DELETE", full_url, headers=hdrs, timeout=30
+            )
 
         sent_token = self._auth.di_token
-        response = await _send(full_url, _do_delete, headers)
+        response = await _do_delete(headers)
 
         if response.status_code == 401:
             if not await self._auth.refresh_session(rejected_token=sent_token):
                 raise self._session_expired_error()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
-            response = await _send(full_url, _do_delete, headers)
+            response = await _do_delete(headers)
 
         if response.status_code not in (200, 204):
             raise GarminAPIError(
@@ -2496,8 +2438,6 @@ class GarminClient:
             fit_data: FIT file bytes
             filename: Name for the upload
         """
-        import requests as stdlib_requests
-
         if not self._auth.is_authenticated:
             raise GarminAuthError("Not authenticated")
         await self._ensure_token_fresh()
@@ -2508,7 +2448,7 @@ class GarminClient:
         full_url = self._get_url(UPLOAD_URL)
         _LOGGER.debug("Uploading FIT file: %s (%d bytes)", filename, len(fit_data))
 
-        def _do_upload(hdrs: dict[str, str]) -> Any:
+        async def _do_upload(hdrs: dict[str, str]) -> HttpResponse:
             files = {
                 "file": (
                     _sanitize_filename(filename),
@@ -2516,17 +2456,19 @@ class GarminClient:
                     "application/octet-stream",
                 )
             }
-            return stdlib_requests.post(full_url, headers=hdrs, files=files, timeout=60)
+            return await self._http.request(
+                "POST", full_url, headers=hdrs, files=files, timeout=60
+            )
 
         sent_token = self._auth.di_token
-        response = await _send(full_url, _do_upload, headers)
+        response = await _do_upload(headers)
 
         if response.status_code == 401:
             if not await self._auth.refresh_session(rejected_token=sent_token):
                 raise self._session_expired_error()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
-            response = await _send(full_url, _do_upload, headers)
+            response = await _do_upload(headers)
 
         if response.status_code not in (200, 201):
             raise GarminAPIError(
@@ -3023,8 +2965,6 @@ class GarminClient:
                 f"Allowed: {', '.join(allowed_formats)}"
             )
 
-        import requests as stdlib_requests
-
         headers = self._auth.get_api_headers()
         headers["User-Agent"] = "GCM-iOS-5.7.2.1"
 
@@ -3042,19 +2982,21 @@ class GarminClient:
         full_url = self._get_url(UPLOAD_URL)
         _LOGGER.debug("Uploading activity file: %s", path.name)
 
-        def _do_upload(hdrs: dict[str, str]) -> Any:
+        async def _do_upload(hdrs: dict[str, str]) -> HttpResponse:
             files = {"file": (_sanitize_filename(path.name), file_bytes, content_type)}
-            return stdlib_requests.post(full_url, headers=hdrs, files=files, timeout=60)
+            return await self._http.request(
+                "POST", full_url, headers=hdrs, files=files, timeout=60
+            )
 
         sent_token = self._auth.di_token
-        response = await _send(full_url, _do_upload, headers)
+        response = await _do_upload(headers)
 
         if response.status_code == 403:
             _LOGGER.debug("Upload got 403, refreshing token and retrying")
             await self._auth.refresh_session(rejected_token=sent_token)
             headers = self._auth.get_api_headers()
             headers["User-Agent"] = "GCM-iOS-5.7.2.1"
-            response = await _send(full_url, _do_upload, headers)
+            response = await _do_upload(headers)
 
         try:
             body = response.json()

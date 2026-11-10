@@ -1,6 +1,7 @@
 """Tests for GarminClient."""
 
 import asyncio
+import json
 import re
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -9,7 +10,13 @@ import pytest
 
 from ha_garmin import GarminAuth, GarminClient
 from ha_garmin.const import GARMIN_CONNECT_API
-from ha_garmin.exceptions import GarminAPIError, GarminAuthError, GarminTLSError
+from ha_garmin.exceptions import (
+    GarminAPIError,
+    GarminAuthError,
+    GarminConnectionError,
+    GarminTLSError,
+)
+from ha_garmin.http import HttpResponse
 from ha_garmin.models import UserProfile
 
 _PROFILE = UserProfile(id=1, profileId=82413233, displayName="tester")
@@ -22,13 +29,9 @@ def _make_auth(di_token: str = "fake_di_token") -> GarminAuth:
     return auth
 
 
-def _mock_response(payload: object, status: int = 200) -> MagicMock:
-    """Return a fake requests.Response-like object."""
-    resp = MagicMock()
-    resp.status_code = status
-    resp.json.return_value = payload
-    resp.text = str(payload)
-    return resp
+def _mock_response(payload: object, status: int = 200) -> HttpResponse:
+    """Return an HttpResponse carrying *payload* as its JSON body."""
+    return HttpResponse(status_code=status, content=json.dumps(payload).encode())
 
 
 # Connect IQ payloads as reported for an indoor rowing session recorded
@@ -136,8 +139,10 @@ class TestGarminClient:
             "profileImageUrlMedium": "https://example.com/image.jpg",
         }
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(profile_payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(profile_payload)
             profile = await client.get_user_profile()
 
         assert profile.display_name == "testuser"
@@ -1007,8 +1012,10 @@ class TestGarminClient:
     async def test_get_activity_connect_iq_display_info_returns_list_only(self):
         """A non-list body (404 -> {}) becomes an empty list."""
         client = GarminClient(_make_auth())
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response({}, status=404)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response({}, status=404)
             assert await client.get_activity_connect_iq_display_info(5) == []
 
     def test_merge_connect_iq_fields_without_definitions(self):
@@ -1176,8 +1183,10 @@ class TestGarminClient:
             }
         ]
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(payload)
             devices = await client.get_devices()
 
         assert len(devices) == 1
@@ -1206,8 +1215,10 @@ class TestGarminClient:
             }
         }
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(payload)
             solar = await client.get_device_solar_data(123)
 
         readings = solar["solarDailyDataDTOs"][0]["solarInputReadings"]
@@ -1218,8 +1229,10 @@ class TestGarminClient:
         auth = _make_auth()
         client = GarminClient(auth)
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response({})
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response({})
             solar = await client.get_device_solar_data(123)
 
         assert solar == {}
@@ -1230,12 +1243,12 @@ class TestGarminClient:
         client = GarminClient(auth)
 
         gpx_bytes = b'<?xml version="1.0"?><gpx></gpx>'
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.content = gpx_bytes
+        resp = HttpResponse(status_code=200, content=gpx_bytes)
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = resp
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = resp
             data = await client.download_activity(12345, "gpx")
 
         assert data == gpx_bytes
@@ -1252,21 +1265,19 @@ class TestGarminClient:
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("12345.fit", fit_bytes)
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.content = buf.getvalue()
+        resp = HttpResponse(status_code=200, content=buf.getvalue())
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            # First to_thread call is the HTTP request, second is zip extraction
-            def dispatch(func, *args, **kwargs):
-                if mock_thread.call_count == 1:
-                    return resp
-                return func(*args, **kwargs)
-
-            mock_thread.side_effect = dispatch
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = resp
             data = await client.download_activity(12345, "fit")
 
         assert data == fit_bytes
+        method, url = mock_request.call_args.args
+        assert method == "GET"
+        assert url.endswith("/download-service/files/activity/12345")
+        assert mock_request.call_args.kwargs["headers"]["Accept"] == "*/*"
 
     async def test_download_activity_invalid_format(self):
         """Test download_activity rejects unknown formats."""
@@ -1289,8 +1300,10 @@ class TestGarminClient:
             "imageUrl": "https://example.com/venu4.png",
         }
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(payload)
             last_used = await client.get_device_last_used()
 
         assert last_used["lastUsedDeviceName"] == "Venu 4 - 45mm"
@@ -1416,8 +1429,10 @@ class TestGarminClient:
             _mock_response(sleep_payload),  # _get_sleep_data_raw (profile cached)
         ]
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.side_effect = responses
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.side_effect = responses
             data = await client.fetch_core_data(date(2026, 4, 12))
 
         assert data["sleepScore"] == 85
@@ -1515,8 +1530,10 @@ class TestGarminClient:
             _mock_response(sleep_payload),
         ]
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.side_effect = responses
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.side_effect = responses
             data = await client.fetch_core_data(date(2026, 8, 27))
 
         # Stored as the true UTC instant, so a UTC+2 viewer's own display
@@ -1631,8 +1648,10 @@ class TestGarminClient:
         auth = _make_auth()
         client = GarminClient(auth)
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response({}, status=204)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response({}, status=204)
             result = await client._request("GET", "https://connectapi.garmin.com/test")
 
         assert result == {}
@@ -1641,21 +1660,19 @@ class TestGarminClient:
         """A failed certificate check means interception, not a flaky endpoint."""
         import ssl
 
-        import requests
-        from urllib3.exceptions import MaxRetryError
-        from urllib3.exceptions import SSLError as Urllib3SSLError
+        import aiohttp
 
         client = GarminClient(_make_auth(), is_cn=True)
         cert_err = ssl.SSLCertVerificationError(
             1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
         )
         cert_err.verify_message = "self-signed certificate"
-        wrapped = requests.exceptions.SSLError(
-            MaxRetryError(MagicMock(), "/test", Urllib3SSLError(cert_err))
-        )
+        wrapped = aiohttp.ClientConnectorCertificateError(MagicMock(), cert_err)
+        session = MagicMock(closed=False)
+        session.request.side_effect = wrapped
 
         with (
-            patch("asyncio.to_thread", new_callable=AsyncMock, side_effect=wrapped),
+            patch.object(client._http, "_session", session),
             pytest.raises(GarminTLSError) as excinfo,
         ):
             await client._request("GET", f"{GARMIN_CONNECT_API}/test")
@@ -1669,15 +1686,18 @@ class TestGarminClient:
         """A dropped handshake is transient; only certificate failures abort."""
         import ssl
 
-        import requests
+        import aiohttp
 
         client = GarminClient(_make_auth())
-        wrapped = requests.exceptions.SSLError(
-            ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred")
+        wrapped = aiohttp.ClientConnectorSSLError(
+            MagicMock(),
+            ssl.SSLEOFError(8, "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred"),
         )
+        session = MagicMock(closed=False)
+        session.request.side_effect = wrapped
 
         with (
-            patch("asyncio.to_thread", new_callable=AsyncMock, side_effect=wrapped),
+            patch.object(client._http, "_session", session),
             pytest.raises(GarminAPIError, match="Request failed"),
         ):
             await client._request("GET", f"{GARMIN_CONNECT_API}/test")
@@ -1790,8 +1810,10 @@ class TestGarminClient:
             ],
         }
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(payload)
             result = await client.get_body_composition()
 
         assert result["metabolicAge"] == expected
@@ -1843,8 +1865,10 @@ class TestGarminClient:
             },
         ]
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(payload)
             result = await client.get_power_to_weight()
 
         assert isinstance(result, list)
@@ -2202,8 +2226,10 @@ class TestGarminClient:
             "mealDetails": [],
         }
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response(payload)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response(payload)
             result = await client.get_nutrition_log()
 
         assert result == payload
@@ -2213,8 +2239,10 @@ class TestGarminClient:
         auth = _make_auth()
         client = GarminClient(auth)
 
-        with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
-            mock_thread.return_value = _mock_response({}, status=404)
+        with patch.object(
+            client._http, "request", new_callable=AsyncMock
+        ) as mock_request:
+            mock_request.return_value = _mock_response({}, status=404)
             result = await client.get_nutrition_log()
 
         assert result == {}
@@ -2438,26 +2466,28 @@ class TestGarminClient:
 
         refresh_calls = []
 
-        def fake_refresh() -> None:
+        async def fake_refresh() -> None:
             refresh_calls.append(len(refresh_calls))
-
-        # First two outside-lock checks are True; once inside the lock the
-        # refresh runs and the next inside-lock check is False, so the second
-        # waiter skips the network request.
-        expires_side = [True, True, False]
+            # Yield so the second caller runs its outside-lock check and
+            # then waits on the lock while this refresh is in flight.
+            await asyncio.sleep(0)
+            auth.di_token = "new_token"
 
         with (
             patch.object(
-                auth, "_token_expires_soon", side_effect=expires_side
+                auth,
+                "_token_expires_soon",
+                side_effect=lambda: auth.di_token == "fake_di_token",
             ) as mock_expires,
-            patch.object(auth, "_refresh_with_lock", side_effect=fake_refresh),
+            patch.object(auth, "_refresh_and_persist", side_effect=fake_refresh),
         ):
             await asyncio.gather(
                 client._ensure_token_fresh(), client._ensure_token_fresh()
             )
 
-        # Two outside-lock checks + one re-check under lock = 3 calls.
-        assert mock_expires.call_count == 3
+        # Each caller checks outside and inside the lock = 4 calls; the
+        # second caller's re-check sees the new token.
+        assert mock_expires.call_count == 4
         # Only the first caller performed the actual refresh.
         assert len(refresh_calls) == 1
 
@@ -2534,11 +2564,26 @@ class TestUploadActivityLogging:
         fit.write_bytes(b"fit")
         client = GarminClient(_make_auth())
         with (
-            patch("requests.post", return_value=_mock_response(self._RESULT, 400)),
+            patch.object(
+                client._http,
+                "request",
+                AsyncMock(return_value=_mock_response(self._RESULT, 400)),
+            ) as mock_request,
             caplog.at_level("WARNING", logger="ha_garmin.client"),
         ):
             body = await client.upload_activity(str(fit))
         assert body == self._RESULT
+        method, url = mock_request.call_args.args
+        assert (method, url) == (
+            "POST",
+            "https://connectapi.garmin.com/upload-service/upload",
+        )
+        kwargs = mock_request.call_args.kwargs
+        assert kwargs["files"] == {
+            "file": ("ride.fit", b"fit", "application/octet-stream")
+        }
+        assert kwargs["headers"]["User-Agent"] == "GCM-iOS-5.7.2.1"
+        assert kwargs["timeout"] == 60
         assert "Upload accepted with warnings: Duplicate Activity." in caplog.text
         assert "987654321" not in caplog.text
         assert "secret-upload-uuid" not in caplog.text
@@ -2555,7 +2600,11 @@ class TestUploadActivityLogging:
             }
         }
         with (
-            patch("requests.post", return_value=_mock_response(result, 500)),
+            patch.object(
+                client._http,
+                "request",
+                AsyncMock(return_value=_mock_response(result, 500)),
+            ),
             pytest.raises(GarminAPIError, match="Upload failed: Bad file; Really bad"),
         ):
             await client.upload_activity(str(fit))
@@ -3052,11 +3101,15 @@ class TestUploadErrors:
         client._auth.refresh_session = AsyncMock(return_value=True)
         responses = [_mock_response({}, 403), _mock_response(self._DUPLICATE, 409)]
         with (
-            patch("requests.post", side_effect=responses),
+            patch.object(
+                client._http, "request", AsyncMock(side_effect=responses)
+            ) as mock_request,
             pytest.raises(GarminAPIError, match="Duplicate Activity") as exc,
         ):
             await client.upload_activity(str(fit))
         assert exc.value.status_code == 409
+        assert mock_request.await_count == 2
+        client._auth.refresh_session.assert_awaited_once()
 
     async def test_non_text_messages_are_skipped(self, tmp_path):
         fit = tmp_path / "ride.fit"
@@ -3068,7 +3121,11 @@ class TestUploadErrors:
             }
         }
         with (
-            patch("requests.post", return_value=_mock_response(result, 500)),
+            patch.object(
+                client._http,
+                "request",
+                AsyncMock(return_value=_mock_response(result, 500)),
+            ),
             pytest.raises(GarminAPIError, match=r"Upload failed: Bad$"),
         ):
             await client.upload_activity(str(fit))
@@ -3731,7 +3788,9 @@ async def test_401_with_failed_refresh_reports_cause() -> None:
     """The re-login error must carry why the token refresh failed."""
     client = GarminClient(_make_auth())
     with (
-        patch("requests.Session.request", return_value=_mock_response({}, 401)),
+        patch.object(
+            client._http, "request", AsyncMock(return_value=_mock_response({}, 401))
+        ),
         patch.object(
             client._auth,
             "_refresh_di_token",
@@ -3757,25 +3816,30 @@ def test_hrv_status_text_is_none_without_status() -> None:
 
 async def test_post_network_error_maps_to_api_error() -> None:
     """A connection error on a POST must surface as GarminAPIError."""
-    import requests
+    import aiohttp
 
     client = GarminClient(_make_auth())
+    session = MagicMock(closed=False)
+    session.request.side_effect = aiohttp.ClientConnectionError("down")
     with (
-        patch("requests.post", side_effect=requests.ConnectionError("down")),
+        patch.object(client._http, "_session", session),
         pytest.raises(GarminAPIError, match="down"),
     ):
-        await client._post_request(f"{GARMIN_CONNECT_API}/test", {})
+        await client._post_request(f"{GARMIN_CONNECT_API}/test", {"a": 1})
+    method, url = session.request.call_args.args
+    assert (method, url) == ("POST", "https://connectapi.garmin.com/test")
+    assert session.request.call_args.kwargs["json"] == {"a": 1}
 
 
 async def test_upload_activity_network_error_maps_to_api_error(tmp_path) -> None:
     """A timeout while uploading an activity must surface as GarminAPIError."""
-    import requests
-
     fit = tmp_path / "ride.fit"
     fit.write_bytes(b"fit")
     client = GarminClient(_make_auth())
+    session = MagicMock(closed=False)
+    session.request.side_effect = TimeoutError("slow")
     with (
-        patch("requests.post", side_effect=requests.Timeout("slow")),
+        patch.object(client._http, "_session", session),
         pytest.raises(GarminAPIError, match="slow"),
     ):
         await client.upload_activity(str(fit))
@@ -3784,9 +3848,9 @@ async def test_upload_activity_network_error_maps_to_api_error(tmp_path) -> None
 async def test_download_fit_invalid_archive_maps_to_api_error() -> None:
     """A FIT download that is not a valid zip must surface as GarminAPIError."""
     client = GarminClient(_make_auth())
-    resp = MagicMock(status_code=200, content=b"not a zip")
+    resp = HttpResponse(status_code=200, content=b"not a zip")
     with (
-        patch("requests.get", return_value=resp),
+        patch.object(client._http, "request", AsyncMock(return_value=resp)),
         pytest.raises(GarminAPIError, match="archive is invalid"),
     ):
         await client.download_activity(12345, "fit")
@@ -3810,12 +3874,15 @@ async def test_401_refresh_failure_type(refresh_error, expected) -> None:
     auth.di_client_id = "CID"
     client = GarminClient(auth)
     if refresh_error == "connection":
-        post = {"side_effect": OSError("network unreachable")}
+        # Login transports map network failures to GarminAPIError.
+        post = AsyncMock(side_effect=GarminAPIError("network unreachable"))
     else:
-        post = {"return_value": MagicMock(ok=False, status_code=refresh_error)}
+        post = AsyncMock(return_value=HttpResponse(status_code=refresh_error))
     with (
-        patch("requests.Session.request", return_value=_mock_response({}, 401)),
-        patch("ha_garmin.auth._http_post", **post),
+        patch.object(
+            client._http, "request", AsyncMock(return_value=_mock_response({}, 401))
+        ),
+        patch("ha_garmin.auth._http_post", post),
         pytest.raises(getattr(exc_mod, expected)) as err,
     ):
         await client._request("GET", f"{GARMIN_CONNECT_API}/test")
@@ -3825,68 +3892,70 @@ async def test_401_refresh_failure_type(refresh_error, expected) -> None:
 
 async def test_proactive_refresh_transient_failure_uses_current_token() -> None:
     """A transient proactive refresh failure must not fail the request."""
-    from ha_garmin.exceptions import GarminConnectionError
-
     client = GarminClient(_make_auth())
     with (
         patch.object(client._auth, "_token_expires_soon", return_value=True),
         patch.object(
             client._auth,
-            "_refresh_with_lock",
+            "_refresh_and_persist",
             side_effect=GarminConnectionError("DI token refresh failed: HTTP 503"),
         ),
-        patch("requests.Session.request", return_value=_mock_response({"ok": 1})),
+        patch.object(
+            client._http,
+            "request",
+            AsyncMock(return_value=_mock_response({"ok": 1})),
+        ) as mock_request,
     ):
         assert await client._request("GET", f"{GARMIN_CONNECT_API}/test") == {"ok": 1}
-
-
-# --- Write call hardening ----------------------------------------------------
-
-
-def _non_json_ok() -> MagicMock:
-    resp = MagicMock(status_code=200)
-    resp.json.side_effect = ValueError("Expecting value")
-    return resp
+    assert mock_request.call_args.kwargs["headers"]["Authorization"] == (
+        "Bearer fake_di_token"
+    )
 
 
 @pytest.mark.parametrize(
-    ("method", "args", "target"),
+    ("method", "args"),
     [
-        ("_post_request", (f"{GARMIN_CONNECT_API}/x", {}), "requests.post"),
-        ("_put_request", (f"{GARMIN_CONNECT_API}/x", {}), "requests.put"),
-        ("_delete_request", (f"{GARMIN_CONNECT_API}/x",), "requests.delete"),
-        ("_upload_fit_file", (b"fit",), "requests.post"),
+        ("_post_request", (f"{GARMIN_CONNECT_API}/x", {})),
+        ("_put_request", (f"{GARMIN_CONNECT_API}/x", {})),
+        ("_delete_request", (f"{GARMIN_CONNECT_API}/x",)),
+        ("_upload_fit_file", (b"fit",)),
     ],
 )
-async def test_write_with_non_json_body_raises_api_error(method, args, target) -> None:
+async def test_write_with_non_json_body_raises_api_error(
+    method: str, args: tuple
+) -> None:
     """A 200 whose body isn't JSON is a GarminAPIError, not a bare JSONDecodeError."""
     client = GarminClient(_make_auth())
+    html = HttpResponse(status_code=200, content=b"<html>maintenance</html>")
     with (
-        patch(target, return_value=_non_json_ok()),
+        patch.object(client._http, "request", AsyncMock(return_value=html)),
         pytest.raises(GarminAPIError, match="invalid JSON"),
     ):
         await getattr(client, method)(*args)
 
 
 @pytest.mark.parametrize(
-    ("method", "args", "target"),
+    ("method", "args"),
     [
-        ("_delete_request", (f"{GARMIN_CONNECT_API}/x",), "requests.delete"),
-        ("_upload_fit_file", (b"fit",), "requests.post"),
+        ("_delete_request", (f"{GARMIN_CONNECT_API}/x",)),
+        ("_upload_fit_file", (b"fit",)),
     ],
 )
 async def test_delete_and_fit_upload_refresh_like_other_writes(
-    method, args, target
+    method: str, args: tuple
 ) -> None:
     """DELETE and FIT upload check auth, refresh proactively and honour a failed refresh."""
+    client = GarminClient(GarminAuth())
     with pytest.raises(GarminAuthError, match="Not authenticated"):
-        await getattr(GarminClient(GarminAuth()), method)(*args)
+        await getattr(client, method)(*args)
 
     client = GarminClient(_make_auth())
     with (
-        patch.object(client, "_ensure_token_fresh", AsyncMock()) as proactive,
+        patch.object(client._auth, "refresh_if_expiring", AsyncMock()) as proactive,
         patch.object(client._auth, "refresh_session", AsyncMock(return_value=False)),
-        patch(target, return_value=_mock_response({}, 401)),
+        patch.object(
+            client._http, "request", AsyncMock(return_value=_mock_response({}, 401))
+        ),
         pytest.raises(GarminAuthError, match="re-login required"),
     ):
         await getattr(client, method)(*args)
@@ -3899,7 +3968,9 @@ async def test_401_passes_the_rejected_token_to_refresh() -> None:
     refresh = AsyncMock(return_value=False)
     with (
         patch.object(client._auth, "refresh_session", refresh),
-        patch("requests.Session.request", return_value=_mock_response({}, 401)),
+        patch.object(
+            client._http, "request", AsyncMock(return_value=_mock_response({}, 401))
+        ),
         pytest.raises(GarminAuthError),
     ):
         await client._request("GET", f"{GARMIN_CONNECT_API}/test")

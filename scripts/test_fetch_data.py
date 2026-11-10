@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Test script to inspect ha_garmin data returned by fetch methods.
 
+Runs the async library standalone, without Home Assistant. The data API uses
+an aiohttp session passed in the same way Home Assistant injects its own.
+
 Usage:
-    python test_fetch_data.py
+    make fetch            (or: .venv/bin/python scripts/test_fetch_data.py)
 
 You need to set environment variables or edit credentials below.
 Tokens are saved to .garmin_tokens.json for subsequent runs.
 """
 
 import asyncio
+import getpass
 import json
 import logging
 import os
@@ -17,6 +21,8 @@ from pathlib import Path
 from pprint import pprint
 
 logging.basicConfig(level=logging.INFO)
+import aiohttp  # noqa: E402
+
 from ha_garmin import GarminAuth, GarminAuthError, GarminClient  # noqa: E402
 from ha_garmin.exceptions import GarminMFARequired  # noqa: E402
 
@@ -27,6 +33,16 @@ PASSWORD = os.getenv("GARMIN_PASSWORD", "your-password")
 
 # Token storage file
 TOKEN_FILE = Path(__file__).resolve().parent.parent / ".garmin_tokens.json"
+
+
+async def ainput(prompt: str) -> str:
+    """input() off the event loop (stripped), so asyncio debug mode only flags real blocking."""
+    return (await asyncio.to_thread(input, prompt)).strip()
+
+
+async def agetpass(prompt: str) -> str:
+    """getpass() off the event loop."""
+    return await asyncio.to_thread(getpass.getpass, prompt)
 
 
 def json_serial(obj):
@@ -61,26 +77,24 @@ def print_section(title: str, data: dict | list | None):
         pprint(data)
 
 
-def interactive_login(auth: GarminAuth) -> None:
+async def interactive_login(auth: GarminAuth) -> None:
     """Prompt for credentials (and MFA if required) and log in."""
     email = EMAIL
     password = PASSWORD
 
     if email == "your-email@example.com":
-        email = input("Garmin Email: ").strip()
+        email = await ainput("Garmin Email: ")
     if password == "your-password":
-        import getpass
-
-        password = getpass.getpass("Garmin Password: ")
+        password = await agetpass("Garmin Password: ")
 
     print(f"Logging in as {email}...")
 
     try:
-        auth.login(email, password)
+        await auth.login(email, password)
     except GarminMFARequired:
         print("MFA required!")
-        mfa_code = input("Enter MFA code: ").strip()
-        auth.complete_mfa(mfa_code)
+        mfa_code = await ainput("Enter MFA code: ")
+        await auth.complete_mfa(mfa_code)
 
     print("Login successful!")
     auth.save_session(TOKEN_FILE)
@@ -89,6 +103,13 @@ def interactive_login(auth: GarminAuth) -> None:
 
 async def main():
     """Fetch and display all data from ha_garmin."""
+    # One shared session for the data API, as Home Assistant would inject it.
+    async with aiohttp.ClientSession() as session:
+        await run(session)
+
+
+async def run(session: aiohttp.ClientSession):
+    """Log in (or reuse saved tokens), fetch everything and dump it."""
     # Initialize new engine
     auth = GarminAuth()
 
@@ -97,12 +118,12 @@ async def main():
     else:
         print("No valid session found, initiating native login...")
         try:
-            interactive_login(auth)
+            await interactive_login(auth)
         except Exception as e:
             print(f"Login failed: {e}")
             return
 
-    client = GarminClient(auth)
+    client = GarminClient(auth, session=session)
 
     today = date.today()
 
@@ -123,7 +144,7 @@ async def main():
         )
         TOKEN_FILE.unlink(missing_ok=True)
         try:
-            interactive_login(auth)
+            await interactive_login(auth)
         except Exception as e:
             print(f"Login failed: {e}")
             return

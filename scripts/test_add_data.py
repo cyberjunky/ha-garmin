@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Test script for ha_garmin write/action methods.
 
+Runs the async library standalone, without Home Assistant, on an injected
+aiohttp session like Home Assistant's.
+
 Usage:
-    python test_add_data.py
+    make add-data         (or: .venv/bin/python scripts/test_add_data.py)
 
 Tokens are loaded from .garmin_tokens.json if available (written by test_fetch_data.py).
 Credentials can be set via GARMIN_EMAIL / GARMIN_PASSWORD environment variables.
@@ -16,8 +19,10 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import aiohttp
+
 from ha_garmin import GarminAuth, GarminClient
-from ha_garmin.exceptions import GarminAuthError
+from ha_garmin.exceptions import GarminAuthError, GarminMFARequired
 
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("ha_garmin").setLevel(logging.DEBUG)
@@ -33,6 +38,7 @@ MENU = [
     ("Body composition", "body_composition"),
     ("Create manual activity", "create_activity"),
     ("Upload activity file", "upload_activity"),
+    ("Download activity file", "download_activity"),
 ]
 
 
@@ -41,7 +47,17 @@ MENU = [
 # ---------------------------------------------------------------------------
 
 
-async def get_client() -> GarminClient:
+async def ainput(prompt: str) -> str:
+    """input() off the event loop (stripped), so asyncio debug mode only flags real blocking."""
+    return (await asyncio.to_thread(input, prompt)).strip()
+
+
+async def agetpass(prompt: str) -> str:
+    """getpass() off the event loop."""
+    return await asyncio.to_thread(getpass.getpass, prompt)
+
+
+async def get_client(session: aiohttp.ClientSession) -> GarminClient:
     auth = GarminAuth()
 
     if auth.load_session(TOKEN_FILE):
@@ -52,17 +68,15 @@ async def get_client() -> GarminClient:
         password = PASSWORD
 
         if email == "your-email@example.com":
-            email = input("Garmin Email: ").strip()
+            email = await ainput("Garmin Email: ")
         if password == "your-password":
-            password = getpass.getpass("Garmin Password: ")
+            password = await agetpass("Garmin Password: ")
 
         try:
-            from ha_garmin.exceptions import GarminMFARequired
-
-            auth.login(email, password)
+            await auth.login(email, password)
         except GarminMFARequired:
-            mfa_code = input("MFA code: ").strip()
-            auth.complete_mfa(mfa_code)
+            mfa_code = await ainput("MFA code: ")
+            await auth.complete_mfa(mfa_code)
         except Exception as e:
             print(f"Login failed: {e}")
             raise
@@ -70,7 +84,7 @@ async def get_client() -> GarminClient:
         auth.save_session(TOKEN_FILE)
         print(f"Session saved to {TOKEN_FILE}\n")
 
-    return GarminClient(auth)
+    return GarminClient(auth, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -81,11 +95,11 @@ async def get_client() -> GarminClient:
 async def do_nutrition(client: GarminClient) -> None:
     """Log a Quick Add nutrition entry (Connect+ required)."""
     print("\n--- Nutrition Quick Add ---")
-    calories = float(input("Calories [100]: ").strip() or "100")
-    carbs = float(input("Carbs g  [10]:  ").strip() or "10")
-    protein = float(input("Protein g [5]: ").strip() or "5")
-    fat = float(input("Fat g    [3]:  ").strip() or "3")
-    name = input("Name     [HA Test]: ").strip() or "HA Test"
+    calories = float(await ainput("Calories [100]: ") or "100")
+    carbs = float(await ainput("Carbs g  [10]:  ") or "10")
+    protein = float(await ainput("Protein g [5]: ") or "5")
+    fat = float(await ainput("Fat g    [3]:  ") or "3")
+    name = await ainput("Name     [HA Test]: ") or "HA Test"
 
     result = await client.add_nutrition_log(
         calories=calories,
@@ -101,7 +115,7 @@ async def do_nutrition(client: GarminClient) -> None:
 async def do_hydration(client: GarminClient) -> None:
     """Log hydration intake."""
     print("\n--- Hydration Log ---")
-    ml = float(input("Amount in mL [250]: ").strip() or "250")
+    ml = float(await ainput("Amount in mL [250]: ") or "250")
 
     result = await client.set_hydration(value_in_ml=ml)
     _print_result(result)
@@ -110,10 +124,10 @@ async def do_hydration(client: GarminClient) -> None:
 async def do_blood_pressure(client: GarminClient) -> None:
     """Log a blood pressure measurement."""
     print("\n--- Blood Pressure ---")
-    systolic = int(input("Systolic  [120]: ").strip() or "120")
-    diastolic = int(input("Diastolic  [80]: ").strip() or "80")
-    pulse = int(input("Pulse      [70]: ").strip() or "70")
-    notes = input("Notes      []:   ").strip()
+    systolic = int(await ainput("Systolic  [120]: ") or "120")
+    diastolic = int(await ainput("Diastolic  [80]: ") or "80")
+    pulse = int(await ainput("Pulse      [70]: ") or "70")
+    notes = await ainput("Notes      []:   ")
 
     result = await client.set_blood_pressure(
         systolic=systolic,
@@ -127,8 +141,8 @@ async def do_blood_pressure(client: GarminClient) -> None:
 async def do_body_composition(client: GarminClient) -> None:
     """Log a body weight / composition measurement via FIT upload."""
     print("\n--- Body Composition ---")
-    weight = float(input("Weight kg    [75.0]: ").strip() or "75.0")
-    percent_fat_s = input("Body fat %   [skip]: ").strip()
+    weight = float(await ainput("Weight kg    [75.0]: ") or "75.0")
+    percent_fat_s = await ainput("Body fat %   [skip]: ")
     percent_fat = float(percent_fat_s) if percent_fat_s else None
 
     result = await client.add_body_composition(
@@ -141,13 +155,13 @@ async def do_body_composition(client: GarminClient) -> None:
 async def do_create_activity(client: GarminClient) -> None:
     """Create a manual activity entry."""
     print("\n--- Create Manual Activity ---")
-    name = input("Activity name  [Test run]:  ").strip() or "Test run"
-    atype = input("Type key       [running]:   ").strip() or "running"
-    start = input("Start datetime [now]:        ").strip()
+    name = await ainput("Activity name  [Test run]:  ") or "Test run"
+    atype = await ainput("Type key       [running]:   ") or "running"
+    start = await ainput("Start datetime [now]:        ")
     if not start:
         start = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000")
-    duration = int(input("Duration min   [30]:        ").strip() or "30")
-    distance = float(input("Distance km    [5.0]:       ").strip() or "5.0")
+    duration = int(await ainput("Duration min   [30]:        ") or "30")
+    distance = float(await ainput("Distance km    [5.0]:       ") or "5.0")
 
     result = await client.create_activity(
         activity_name=name,
@@ -162,13 +176,70 @@ async def do_create_activity(client: GarminClient) -> None:
 async def do_upload_activity(client: GarminClient) -> None:
     """Upload a FIT / GPX / TCX activity file."""
     print("\n--- Upload Activity File ---")
-    file_path = input("File path (FIT/GPX/TCX): ").strip()
+    file_path = await ainput("File path (FIT/GPX/TCX): ")
     if not file_path:
         print("No path given, skipping.")
         return
 
     result = await client.upload_activity(file_path=file_path)
     _print_result(result)
+
+
+DOWNLOAD_DIR = Path(__file__).resolve().parent.parent / "downloads"
+DOWNLOAD_FORMATS = {
+    "fit": "fit",
+    "original": "zip",
+    "tcx": "tcx",
+    "gpx": "gpx",
+    "kml": "kml",
+    "csv": "csv",
+}
+
+
+def _looks_like(fmt: str, content: bytes) -> bool:
+    """Cheap check that the bytes are the format asked for."""
+    if fmt == "fit":
+        return len(content) > 12 and content[8:12] == b".FIT"
+    if fmt == "original":
+        return content[:2] == b"PK"
+    if fmt in ("tcx", "gpx", "kml"):
+        return content.lstrip()[:5] == b"<?xml" or content.lstrip()[:1] == b"<"
+    return bool(content)
+
+
+async def do_download_activity(client: GarminClient) -> None:
+    """Download one of the recent activities in a chosen format."""
+    print("\n--- Download Activity File ---")
+    activities = await client.get_activities(limit=5)
+    for i, activity in enumerate(activities, 1):
+        print(
+            f"  {i}. {activity.get('activityId')}  "
+            f"{activity.get('startTime')}  {activity.get('activityName')}"
+        )
+    choice = await ainput("Number from the list, or an activity ID [1]: ") or "1"
+    if choice.isdigit() and 1 <= int(choice) <= len(activities):
+        activity_id = int(activities[int(choice) - 1]["activityId"])
+    elif choice.isdigit():
+        activity_id = int(choice)
+    else:
+        print("Not a number, skipping.")
+        return
+
+    fmt = (await ainput(f"Format {list(DOWNLOAD_FORMATS)} [fit]: ") or "fit").lower()
+    if fmt not in DOWNLOAD_FORMATS:
+        print(f"Unknown format {fmt!r}, skipping.")
+        return
+
+    content = await client.download_activity(activity_id, fmt)
+    path = DOWNLOAD_DIR / f"activity_{activity_id}.{DOWNLOAD_FORMATS[fmt]}"
+
+    def _write() -> None:
+        DOWNLOAD_DIR.mkdir(exist_ok=True)
+        path.write_bytes(content)
+
+    await asyncio.to_thread(_write)
+    check = "looks valid" if _looks_like(fmt, content) else "UNEXPECTED CONTENT"
+    print(f"\nSaved {len(content)} bytes to {path} ({check})")
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +259,7 @@ HANDLERS = {
     "body_composition": do_body_composition,
     "create_activity": do_create_activity,
     "upload_activity": do_upload_activity,
+    "download_activity": do_download_activity,
 }
 
 
@@ -201,7 +273,13 @@ async def main() -> None:
     print("  ha_garmin — write/action test script")
     print("=" * 50)
 
-    client = await get_client()
+    # One shared session for the data API, as Home Assistant would inject it.
+    async with aiohttp.ClientSession() as session:
+        await run(session)
+
+
+async def run(session: aiohttp.ClientSession) -> None:
+    client = await get_client(session)
 
     while True:
         print("\nSelect action:")
@@ -209,7 +287,7 @@ async def main() -> None:
             print(f"  {i}. {label}")
         print("  0. Exit")
 
-        choice = input("\n> ").strip()
+        choice = await ainput("\n> ")
         if choice == "0":
             break
 
@@ -227,7 +305,7 @@ async def main() -> None:
         except GarminAuthError:
             print("\nSession expired — please log in again.")
             TOKEN_FILE.unlink(missing_ok=True)
-            client = await get_client()
+            client = await get_client(session)
             try:
                 await HANDLERS[key](client)
             except Exception as e:
