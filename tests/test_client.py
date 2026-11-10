@@ -3960,3 +3960,18 @@ async def test_delete_and_fit_upload_refresh_like_other_writes(
     ):
         await getattr(client, method)(*args)
     proactive.assert_awaited_once()
+
+
+async def test_401_passes_the_rejected_token_to_refresh() -> None:
+    """The client tells auth which token was refused, so parallel 401s refresh once."""
+    client = GarminClient(_make_auth("tok_1"))
+    refresh = AsyncMock(return_value=False)
+    with (
+        patch.object(client._auth, "refresh_session", refresh),
+        patch.object(
+            client._http, "request", AsyncMock(return_value=_mock_response({}, 401))
+        ),
+        pytest.raises(GarminAuthError),
+    ):
+        await client._request("GET", f"{GARMIN_CONNECT_API}/test")
+    refresh.assert_awaited_once_with(rejected_token="tok_1")

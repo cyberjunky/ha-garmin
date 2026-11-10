@@ -1136,3 +1136,10 @@ async def test_captcha_required_counts_as_blocked(flow: str) -> None:
         pytest.raises(GarminRateLimitError, match="CAPTCHA"),
     ):
         await login("u@x.com", "pw")
+
+
+def test_no_plain_http_portal_strategy() -> None:
+    """The portal blocks clients without a browser TLS fingerprint, so that strategy is gone."""
+    assert not hasattr(GarminAuth, "_portal_web_login_requests")
+    names = [n for n, _ in GarminAuth()._login_strategies("e", "p")]
+    assert not any(n.startswith("portal+") and n != "portal+cffi" for n in names)
