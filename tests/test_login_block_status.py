@@ -50,7 +50,6 @@ def test_mixed_427_and_429_count_as_all_strategies_blocked():
         patch.object(auth, "_mobile_login_requests", side_effect=blocked(429)),
         patch.object(auth, "_widget_web_login", side_effect=blocked(427)),
         patch.object(auth, "_portal_web_login_cffi", side_effect=blocked(429)),
-        patch.object(auth, "_portal_web_login_requests", side_effect=blocked(429)),
         pytest.raises(GarminRateLimitError, match="rate limited or blocked"),
     ):
         auth.login("e@x.com", "pw")
