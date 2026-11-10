@@ -247,6 +247,9 @@ class GarminAuth:
         # so callers can tell a 401 (token refused) from a 403 (possibly a
         # client/network block) when they report it.
         self._last_rejection_status: int | None = None
+        # Sanitized cause of the last failed refresh_session(), so the
+        # "re-login required" error callers raise can say why.
+        self.last_refresh_error: str | None = None
 
     @property
     def is_authenticated(self) -> bool:
@@ -1266,10 +1269,12 @@ class GarminAuth:
 
         try:
             await asyncio.to_thread(self._refresh_with_lock)
-            return True
         except Exception as err:
-            _LOGGER.debug("DI token refresh failed: %s", _sanitize_exception_text(err))
-        return False
+            self.last_refresh_error = _sanitize_exception_text(err)
+            _LOGGER.debug("DI token refresh failed: %s", self.last_refresh_error)
+            return False
+        self.last_refresh_error = None
+        return True
 
     def _sync_refresh_if_needed(self) -> None:
         """Synchronously refresh the token if it expires soon.
