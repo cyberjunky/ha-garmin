@@ -10,6 +10,7 @@ Python client for Garmin Connect API, designed for Home Assistant integration.
 ## Features
 
 - **Native Garmin Connect API** integration
+- **Fully async** - aiohttp for the data API (session can be injected), curl_cffi `AsyncSession` for login, MFA and token refresh
 - **Robust authentication** with multiple login strategies and automatic fallbacks
 - **MFA support** with automatic endpoint fallback
 - **Token persistence** - save and restore sessions to avoid re-login
@@ -33,79 +34,86 @@ pip install ha-garmin[ua]
 
 ## Usage
 
-### Standalone script
+ha-garmin is fully async: every network call is awaited on the event loop.
 
-Authentication is synchronous; data fetches run in a thread pool and are awaited.
+- **Data API:** aiohttp. Pass your own `aiohttp.ClientSession` (Home Assistant passes its own); without one the client creates a session, which you release with `await client.close()` or `async with`.
+- **Login, MFA and token refresh:** `curl_cffi`'s asyncio `AsyncSession` with TLS impersonation. Garmin's web application firewall only lets browser- or app-like TLS fingerprints through to SSO, which aiohttp cannot produce, so these keep their own short-lived sessions. That also keeps SSO cookies out of a shared cookie jar.
+
+### Standalone script
 
 ```python
 import asyncio
-from datetime import date
+
+import aiohttp
+
 from ha_garmin import GarminAuth, GarminClient, GarminMFARequired
 
-# Auth is synchronous
-auth = GarminAuth()
-
-if not auth.load_session(".garmin_tokens.json"):
-    try:
-        auth.login("email@example.com", "password")
-    except GarminMFARequired:
-        mfa_code = input("Enter MFA code: ")
-        auth.complete_mfa(mfa_code)
-    auth.save_session(".garmin_tokens.json")
-
-# timezone: fallback zone for "today" until the Garmin account's own UTC
-# offset is learned from the first daily summary (defaults to the system zone).
-client = GarminClient(auth, timezone="Europe/Amsterdam")
+TOKENS = ".garmin_tokens.json"
 
 
-async def fetch_all():
-    today = client.today()  # Garmin calendar date, independent of the process zone
-    core_data     = await client.fetch_core_data(today)      # Steps, HR, sleep, stress
-    body_data     = await client.fetch_body_data(today)      # Weight, body composition, fitness age
-    activity_data = await client.fetch_activity_data(today)  # Activities, workouts, training calendar
-    training_data = await client.fetch_training_data(today)  # HRV, training status
-    goals_data    = await client.fetch_goals_data()          # Goals, badges
-    gear_data     = await client.fetch_gear_data()           # Gear, alarms, solar, devices
+async def main() -> None:
+    auth = GarminAuth()
+    if not auth.load_session(TOKENS):  # file I/O only, no network
+        try:
+            await auth.login("email@example.com", "password")
+        except GarminMFARequired:
+            await auth.complete_mfa(input("Enter MFA code: "))
+        auth.save_session(TOKENS)
+
+    async with aiohttp.ClientSession() as session:
+        # timezone: fallback zone for "today" until the Garmin account's own UTC
+        # offset is learned from the first daily summary (defaults to the system zone).
+        client = GarminClient(auth, timezone="Europe/Amsterdam", session=session)
+        today = client.today()  # Garmin calendar date, independent of the process zone
+        core_data     = await client.fetch_core_data(today)      # Steps, HR, sleep, stress
+        body_data     = await client.fetch_body_data(today)      # Weight, body composition, fitness age
+        activity_data = await client.fetch_activity_data(today)  # Activities, workouts, training calendar
+        training_data = await client.fetch_training_data(today)  # HRV, training status
+        goals_data    = await client.fetch_goals_data()          # Goals, badges
+        gear_data     = await client.fetch_gear_data()           # Gear, alarms, solar, devices
 
 
-asyncio.run(fetch_all())
+asyncio.run(main())
 ```
+
+`load_session` and `save_session` do blocking file I/O; inside a running event loop (e.g. Home Assistant) call them in an executor.
 
 ### Home Assistant integration
 
-Set up auth during `async_setup_entry` and pass the client to your coordinators.
+Restore the tokens the config flow stored, and pass Home Assistant's aiohttp session to the client.
 
 ```python
-from datetime import date, timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
 from ha_garmin import GarminAuth, GarminClient
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auth = GarminAuth()
+    auth.di_token = entry.data["token"]
+    auth.di_refresh_token = entry.data["refresh_token"]
+    auth.di_client_id = entry.data["client_id"]
 
-    token_path = hass.config.path(".storage/garmin_tokens.json")
-    if not auth.load_session(token_path):
-        # Initial login must have been completed via the config flow
-        raise ConfigEntryAuthFailed("No valid Garmin session")
+    client = GarminClient(
+        auth,
+        timezone=hass.config.time_zone,
+        session=async_get_clientsession(hass),
+    )
+    ...
+```
 
-    client = GarminClient(auth)
+Persist `auth.di_token` / `auth.di_refresh_token` back to the config entry after polls: the library rotates them on refresh.
 
-    coordinator = GarminCoreCoordinator(hass, client)
-    await coordinator.async_config_entry_first_refresh()
+### Testing locally
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    return True
+The scripts in `scripts/` run the library against a real account, without Home Assistant. Credentials come from `GARMIN_EMAIL` / `GARMIN_PASSWORD` or a prompt; tokens are kept in `.garmin_tokens.json` between runs.
 
-
-class GarminCoreCoordinator(DataUpdateCoordinator):
-    def __init__(self, hass: HomeAssistant, client: GarminClient) -> None:
-        super().__init__(hass, logger=_LOGGER, name="Garmin core", update_interval=timedelta(minutes=15))
-        self._client = client
-
-    async def _async_update_data(self) -> dict:
-        return await self._client.fetch_core_data(date.today())
+```bash
+make fetch         # fetch all data and dump it to .garmin_data_dump.json
+make fetch-debug   # same, in asyncio debug mode: logs anything that blocks the event loop >100 ms
+make add-data      # interactive write actions (nutrition, hydration, blood pressure, uploads)
 ```
 
 ## Coordinator Fetch Methods

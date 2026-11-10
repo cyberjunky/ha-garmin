@@ -10,6 +10,7 @@ Strategy chain (each strategy is tried in order; only auth errors stop the chain
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -18,13 +19,11 @@ import os
 import random
 import re
 import secrets
-import threading
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from urllib.parse import urlencode
-
-from curl_cffi import requests as cffi_requests
 
 try:
     from ua_generator import generate as _generate_ua
@@ -36,10 +35,12 @@ except ImportError:
 from .exceptions import (
     GarminAPIError,
     GarminAuthError,
+    GarminConnectError,
     GarminConnectionError,
     GarminMFARequired,
     GarminRateLimitError,
 )
+from .http import HttpResponse, LoginSession, impersonated_request
 from .models import AuthResult
 
 _LOGGER = logging.getLogger(__name__)
@@ -200,9 +201,9 @@ def _random_browser_headers() -> dict[str, str]:
     return {"User-Agent": DESKTOP_USER_AGENT}
 
 
-def _http_post(url: str, **kwargs: Any) -> Any:
+async def _http_post(url: str, **kwargs: Any) -> HttpResponse:
     """POST using curl_cffi TLS impersonation."""
-    return cffi_requests.post(url, impersonate="chrome", **kwargs)
+    return await impersonated_request("POST", url, impersonate="chrome", **kwargs)
 
 
 # Garmin's widget MFA page exposes these variables in inline <script> tags.
@@ -239,7 +240,7 @@ class GarminAuth:
         self._tokenstore_path: str | None = None
         # Serialize token refresh and state mutation so concurrent API calls can't
         # race on the same refresh token or observe half-updated state.
-        self._token_lock: threading.RLock = threading.RLock()
+        self._token_lock = asyncio.Lock()
         # True when a login strategy has raised GarminMFARequired and MFA state
         # is held on this instance. Prevents interleaving another login on the
         # same instance while MFA is pending.
@@ -275,15 +276,21 @@ class GarminAuth:
         """Base URL for API requests."""
         return self._connectapi
 
-    def _clear_auth_state(self) -> None:
+    async def _clear_auth_state(self) -> None:
         """Wipe in-memory tokens so the next strategy starts clean."""
         self.di_token = None
         self.di_refresh_token = None
         self.di_client_id = None
-        self._clear_mfa_state()
+        await self._clear_mfa_state()
 
-    def _clear_mfa_state(self) -> None:
-        """Clear pending MFA state so a new login can start."""
+    async def _clear_mfa_state(self) -> None:
+        """Clear pending MFA state (closing its session) so a new login can start.
+
+        State is cleared before the close, and a failing close is only logged,
+        so it can neither leave a dead session behind nor replace the result
+        of complete_mfa().
+        """
+        session = getattr(self, "_mfa_session", None)
         self._mfa_pending = False
         for attr in (
             "_mfa_session",
@@ -295,8 +302,22 @@ class GarminAuth:
             "_widget_last_resp",
         ):
             setattr(self, attr, None)
+        if isinstance(session, LoginSession):
+            try:
+                await session.close()
+            except Exception as err:
+                _LOGGER.debug(
+                    "Closing the MFA session failed: %s", _sanitize_exception_text(err)
+                )
 
-    def _verify_token(self) -> bool:
+    async def cancel_mfa(self) -> None:
+        """Abandon a pending MFA login and release its session.
+
+        Unlike logout(), stored tokens and the token file are left alone.
+        """
+        await self._clear_mfa_state()
+
+    async def _verify_token(self) -> bool:
         """Confirm the current token is accepted by the API tier.
 
         A login strategy can obtain a DI token from the auth host (HTTP 200)
@@ -312,10 +333,10 @@ class GarminAuth:
         if not self.is_authenticated:
             return False
         try:
-            r = cffi_requests.get(
+            r = await impersonated_request(
+                "GET",
                 f"{self._connectapi}/userprofile-service/socialProfile",
                 headers=self.get_api_headers(),
-                impersonate="chrome",
                 timeout=15,
             )
         except Exception as e:
@@ -367,7 +388,7 @@ class GarminAuth:
     #  LOGIN — cascading strategy chain                                    #
     # ------------------------------------------------------------------ #
 
-    def login(self, email: str, password: str) -> AuthResult:
+    async def login(self, email: str, password: str) -> AuthResult:
         """Login using a cascading strategy chain.
 
         Tries each strategy in order.  Only GarminAuthError (bad credentials)
@@ -383,17 +404,18 @@ class GarminAuth:
         # Start every credential login from a clean slate: a stale token from
         # a previous login/session-load must not leave is_authenticated True
         # when every strategy fails.
-        self._clear_auth_state()
+        await self._clear_auth_state()
         # CN SSO does not support the mobile API endpoint, so web-based
         # strategies must run first.  For .com accounts the mobile strategies
         # stay at the front because they bypass Cloudflare more reliably.
-        # There is no plain-requests portal strategy: the portal answers
-        # clients without a browser TLS fingerprint with a Cloudflare 403 or
-        # CAPTCHA_REQUIRED, so it could only add its 30-45 s delay.
         if self._is_cn:
             strategies: list[tuple[str, Any]] = [
                 ("widget+cffi", lambda: self._widget_web_login(email, password)),
                 ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
+                (
+                    "portal+requests",
+                    lambda: self._portal_web_login_requests(email, password),
+                ),
                 ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
                 (
                     "mobile+requests",
@@ -409,6 +431,10 @@ class GarminAuth:
                 ),
                 ("widget+cffi", lambda: self._widget_web_login(email, password)),
                 ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
+                (
+                    "portal+requests",
+                    lambda: self._portal_web_login_requests(email, password),
+                ),
             ]
 
         last_err: Exception | None = None
@@ -421,11 +447,11 @@ class GarminAuth:
         for name, run in strategies:
             try:
                 _LOGGER.debug("Trying login strategy: %s", name)
-                result = run()
+                result = await run()
                 # A strategy may get a token the API tier rejects (account/
                 # region specific). Verify before accepting; otherwise fall
                 # through to the next strategy.
-                if not self._verify_token():
+                if not await self._verify_token():
                     _LOGGER.debug(
                         "%s obtained a token the API rejected; trying next strategy",
                         name,
@@ -436,7 +462,7 @@ class GarminAuth:
                         )
                     )
                     failures.append(f"{name}: token rejected")
-                    self._clear_auth_state()
+                    await self._clear_auth_state()
                     continue
                 return result
             except (GarminAuthError, GarminMFARequired):
@@ -468,7 +494,23 @@ class GarminAuth:
             + (_sanitize_exception_text(last_err) if last_err else "no strategies ran")
         )
 
-    def _mobile_login_cffi(self, email: str, password: str) -> AuthResult:
+    @staticmethod
+    async def _with_session(
+        sess: LoginSession,
+        attempt: Callable[[LoginSession], Awaitable[AuthResult]],
+    ) -> AuthResult:
+        """Run one login attempt; its session stays open only while MFA is pending."""
+        keep = False
+        try:
+            return await attempt(sess)
+        except GarminMFARequired:
+            keep = True  # complete_mfa() continues on this session
+            raise
+        finally:
+            if not keep:
+                await sess.close()
+
+    async def _mobile_login_cffi(self, email: str, password: str) -> AuthResult:
         """Mobile login with curl_cffi TLS fingerprint rotation.
 
         Different TLS fingerprints land in different Cloudflare rate-limit
@@ -478,8 +520,10 @@ class GarminAuth:
         for imp in MOBILE_IMPERSONATIONS:
             try:
                 _LOGGER.debug("mobile+cffi trying impersonation=%s", imp)
-                sess: Any = cffi_requests.Session(impersonate=cast(Any, imp))
-                return self._do_mobile_login(sess, email, password)
+                return await self._with_session(
+                    LoginSession(impersonate=imp),
+                    lambda sess: self._do_mobile_login(sess, email, password),
+                )
             except (GarminAuthError, GarminMFARequired):
                 raise
             except GarminRateLimitError as e:
@@ -503,18 +547,20 @@ class GarminAuth:
     #  STRATEGY 2 — Mobile iOS + plain requests                           #
     # ------------------------------------------------------------------ #
 
-    def _mobile_login_requests(self, email: str, password: str) -> AuthResult:
-        """Mobile login with plain requests (no TLS fingerprinting)."""
-        import requests as stdlib_requests
-
-        sess = stdlib_requests.Session()
-        return self._do_mobile_login(sess, email, password)
+    async def _mobile_login_requests(self, email: str, password: str) -> AuthResult:
+        """Mobile login with a plain aiohttp session (no TLS fingerprinting)."""
+        return await self._with_session(
+            LoginSession(),
+            lambda sess: self._do_mobile_login(sess, email, password),
+        )
 
     # ------------------------------------------------------------------ #
     #  Shared mobile login logic                                          #
     # ------------------------------------------------------------------ #
 
-    def _do_mobile_login(self, sess: Any, email: str, password: str) -> AuthResult:
+    async def _do_mobile_login(
+        self, sess: LoginSession, email: str, password: str
+    ) -> AuthResult:
         """Login via sso.garmin.com/mobile/api/login (iOS app flow).
 
         Loads the mobile sign-in page first, as the app's web view does: a
@@ -524,7 +570,7 @@ class GarminAuth:
         """
         signin_url = f"{self._sso}/mobile/sso/en_US/sign-in"
         signin_params = {"clientId": IOS_SSO_CLIENT_ID, "service": IOS_SERVICE_URL}
-        r = sess.get(
+        r = await sess.get(
             signin_url,
             params=signin_params,
             headers={
@@ -545,7 +591,7 @@ class GarminAuth:
 
         delay_s = random.uniform(MOBILE_DELAY_MIN_S, MOBILE_DELAY_MAX_S)
         _LOGGER.debug("Mobile login: waiting %.0fs before submitting", delay_s)
-        time.sleep(delay_s)
+        await asyncio.sleep(delay_s)
 
         login_url = f"{self._sso}/mobile/api/login"
         login_params = {
@@ -562,7 +608,7 @@ class GarminAuth:
             "Referer": f"{signin_url}?{urlencode(signin_params)}",
         }
 
-        r = sess.post(
+        r = await sess.post(
             login_url,
             params=login_params,
             headers=login_headers,
@@ -604,16 +650,11 @@ class GarminAuth:
 
         if resp_type == "SUCCESSFUL":
             ticket = res["serviceTicketId"]
-            self._exchange_service_ticket(ticket, service_url=IOS_SERVICE_URL)
+            await self._exchange_service_ticket(ticket, service_url=IOS_SERVICE_URL)
             return AuthResult(success=True)
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
-
-        if resp_type == "CAPTCHA_REQUIRED":
-            # Garmin wants a CAPTCHA this client can't solve: blocked, like a
-            # 429, so the next strategy is tried and the summary says so.
-            raise GarminRateLimitError("Login blocked: Garmin requires a CAPTCHA")
 
         # Check for 429 buried inside JSON error body
         if res.get("error", {}).get("status-code") == "429":
@@ -631,13 +672,21 @@ class GarminAuth:
     #  STRATEGY 3 — SSO Embed Widget + curl_cffi                         #
     # ------------------------------------------------------------------ #
 
-    def _widget_web_login(self, email: str, password: str) -> AuthResult:
+    async def _widget_web_login(self, email: str, password: str) -> AuthResult:
         """Login via the SSO embed HTML widget.
 
         Uses HTML form flow which bypasses clientId-based rate limits.
         Uses curl_cffi for TLS fingerprinting.
         """
-        sess: Any = cffi_requests.Session(impersonate="chrome", timeout=30)
+        return await self._with_session(
+            LoginSession(impersonate="chrome", timeout=30),
+            lambda sess: self._do_widget_web_login(sess, email, password),
+        )
+
+    async def _do_widget_web_login(
+        self, sess: LoginSession, email: str, password: str
+    ) -> AuthResult:
+        """Widget login steps on an open session."""
         sso_base = f"{self._sso}/sso"
         sso_embed = f"{sso_base}/embed"
         embed_params = {
@@ -655,14 +704,14 @@ class GarminAuth:
         }
 
         # Step 1: GET embed page to establish session cookies
-        r = sess.get(sso_embed, params=embed_params)
+        r = await sess.get(sso_embed, params=embed_params)
         if r.status_code in _BLOCKED_STATUSES:
             raise GarminRateLimitError(f"Widget embed GET returned {r.status_code}")
         if not r.ok:
             raise GarminAPIError(f"Widget embed returned {r.status_code}")
 
         # Step 2: GET signin page for CSRF token
-        r = sess.get(
+        r = await sess.get(
             f"{sso_base}/signin", params=signin_params, headers={"Referer": sso_embed}
         )
         if r.status_code in _BLOCKED_STATUSES:
@@ -675,10 +724,10 @@ class GarminAuth:
         # Anti-WAF delay between GET and POST
         delay_s = random.uniform(WIDGET_DELAY_MIN_S, WIDGET_DELAY_MAX_S)
         _LOGGER.debug("Widget login: waiting %.0fs anti-WAF delay...", delay_s)
-        time.sleep(delay_s)
+        await asyncio.sleep(delay_s)
 
         # Step 3: POST credentials
-        r = sess.post(
+        r = await sess.post(
             f"{sso_base}/signin",
             params=signin_params,
             headers={"Referer": r.url},
@@ -741,7 +790,7 @@ class GarminAuth:
             "authentication application" in title_lower and mfa_method
         )
         if looks_like_mfa:
-            self._widget_request_mfa_code(sess, r.text, r.url)
+            await self._widget_request_mfa_code(sess, r.text, r.url)
             self._mfa_session = sess
             self._mfa_login_params = signin_params
             self._mfa_post_headers = {"Referer": r.url}
@@ -765,10 +814,12 @@ class GarminAuth:
         if not ticket_match:
             raise GarminAPIError("Widget login: missing service ticket")
 
-        self._exchange_service_ticket(ticket_match.group(1), service_url=sso_embed)
+        await self._exchange_service_ticket(
+            ticket_match.group(1), service_url=sso_embed
+        )
         return AuthResult(success=True)
 
-    def _complete_mfa_widget(self, mfa_code: str) -> None:
+    async def _complete_mfa_widget(self, mfa_code: str) -> None:
         """Complete MFA for widget flow."""
         sess = getattr(self, "_mfa_session", None)
         r = getattr(self, "_widget_last_resp", None)
@@ -779,7 +830,7 @@ class GarminAuth:
         if not csrf_match:
             raise GarminAuthError("Widget MFA: missing CSRF token")
 
-        r = sess.post(
+        r = await sess.post(
             f"{self._sso}/sso/verifyMFA/loginEnterMfaCode",
             params=getattr(self, "_mfa_login_params", {}),
             headers=getattr(self, "_mfa_post_headers", {}),
@@ -805,11 +856,13 @@ class GarminAuth:
         if not ticket_match:
             raise GarminAuthError("Widget MFA: missing service ticket")
 
-        self._exchange_service_ticket(
+        await self._exchange_service_ticket(
             ticket_match.group(1), service_url=f"{self._sso}/sso/embed"
         )
 
-    def _widget_request_mfa_code(self, sess: Any, page_html: str, referer: str) -> None:
+    async def _widget_request_mfa_code(
+        self, sess: LoginSession, page_html: str, referer: str
+    ) -> None:
         """Request Garmin to send an email/SMS MFA code for this widget session.
 
         The widget's own JavaScript calls ``/sso/verifyMFA/mfaCode`` when the
@@ -836,7 +889,7 @@ class GarminAuth:
         _LOGGER.debug(
             "Widget MFA: explicitly requesting %s code from Garmin", mfa_method
         )
-        r = sess.post(
+        r = await sess.post(
             f"{self._sso}/sso/verifyMFA/mfaCode",
             params={"clientId": client_id},
             headers={
@@ -859,7 +912,7 @@ class GarminAuth:
     #  STRATEGY 4 — Portal web + curl_cffi (TLS fingerprint rotation)    #
     # ------------------------------------------------------------------ #
 
-    def _portal_web_login_cffi(self, email: str, password: str) -> AuthResult:
+    async def _portal_web_login_cffi(self, email: str, password: str) -> AuthResult:
         """Portal login with curl_cffi TLS fingerprint rotation.
 
         Different TLS fingerprints land in different Cloudflare rate-limit
@@ -869,8 +922,10 @@ class GarminAuth:
         for imp in PORTAL_IMPERSONATIONS:
             try:
                 _LOGGER.debug("portal+cffi trying impersonation=%s", imp)
-                sess: Any = cffi_requests.Session(impersonate=cast(Any, imp))
-                return self._do_portal_web_login(sess, email, password)
+                return await self._with_session(
+                    LoginSession(impersonate=imp),
+                    lambda sess: self._do_portal_web_login(sess, email, password),
+                )
             except (GarminAuthError, GarminMFARequired):
                 raise
             except GarminRateLimitError as e:
@@ -891,16 +946,29 @@ class GarminAuth:
         raise GarminAPIError("portal+cffi: no impersonations available")
 
     # ------------------------------------------------------------------ #
+    #  STRATEGY 5 — Portal web + plain requests                          #
+    # ------------------------------------------------------------------ #
+
+    async def _portal_web_login_requests(self, email: str, password: str) -> AuthResult:
+        """Portal login with a plain aiohttp session (no TLS fingerprinting)."""
+        return await self._with_session(
+            LoginSession(),
+            lambda sess: self._do_portal_web_login(sess, email, password),
+        )
+
+    # ------------------------------------------------------------------ #
     #  Shared portal login logic                                          #
     # ------------------------------------------------------------------ #
 
-    def _do_portal_web_login(self, sess: Any, email: str, password: str) -> AuthResult:
+    async def _do_portal_web_login(
+        self, sess: LoginSession, email: str, password: str
+    ) -> AuthResult:
         """Login via /portal/api/login — desktop browser flow."""
         signin_url = f"{self._sso}/portal/sso/en-US/sign-in"
         browser_hdrs = _random_browser_headers()
 
         # Step 1: GET the signin page to grab initial cookies
-        get_resp = sess.get(
+        get_resp = await sess.get(
             signin_url,
             params={
                 "clientId": PORTAL_SSO_CLIENT_ID,
@@ -926,7 +994,7 @@ class GarminAuth:
             "Portal login: waiting %.0fs to avoid Cloudflare rate limiting...",
             delay_s,
         )
-        time.sleep(delay_s)
+        await asyncio.sleep(delay_s)
 
         # Step 2: POST credentials
         login_params = {
@@ -946,7 +1014,7 @@ class GarminAuth:
             ),
         }
 
-        r = sess.post(
+        r = await sess.post(
             f"{self._sso}/portal/api/login",
             params=login_params,
             headers=post_headers,
@@ -988,16 +1056,11 @@ class GarminAuth:
 
         if resp_type == "SUCCESSFUL":
             ticket = res["serviceTicketId"]
-            self._exchange_service_ticket(ticket)
+            await self._exchange_service_ticket(ticket)
             return AuthResult(success=True)
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
-
-        if resp_type == "CAPTCHA_REQUIRED":
-            # Garmin wants a CAPTCHA this client can't solve: blocked, like a
-            # 429, so the next strategy is tried and the summary says so.
-            raise GarminRateLimitError("Login blocked: Garmin requires a CAPTCHA")
 
         # Check for 429 buried inside JSON error body
         if res.get("error", {}).get("status-code") == "429":
@@ -1015,29 +1078,29 @@ class GarminAuth:
     #  MFA COMPLETION — dual-endpoint fallback                            #
     # ------------------------------------------------------------------ #
 
-    def complete_mfa(self, mfa_code: str) -> AuthResult:
+    async def complete_mfa(self, mfa_code: str) -> AuthResult:
         """Complete MFA verification."""
-        if not hasattr(self, "_mfa_session"):
+        if getattr(self, "_mfa_session", None) is None:
             raise GarminAuthError("No pending MFA session")
         try:
-            self._complete_mfa(mfa_code)
+            await self._complete_mfa(mfa_code)
             # The MFA session is tied to one strategy, so there's no fall-through
             # here — but still fail loudly rather than store a token the API tier
             # rejects (see _verify_token).
-            if not self._verify_token():
+            if not await self._verify_token():
                 message = self._token_rejected_message(
                     "Token rejected by API tier after MFA"
                 )
-                self._clear_auth_state()
-                self._clear_mfa_state()
+                await self._clear_auth_state()
                 raise GarminAuthError(message)
             return AuthResult(success=True)
         finally:
-            # Always clear the pending MFA flag and per-attempt state so a new
-            # login can start after complete_mfa() finishes (success or failure).
-            self._clear_mfa_state()
+            # Always clear the pending MFA flag and per-attempt state (and close
+            # its session) so a new login can start after complete_mfa()
+            # finishes, success or failure.
+            await self._clear_mfa_state()
 
-    def _complete_mfa(self, mfa_code: str) -> None:
+    async def _complete_mfa(self, mfa_code: str) -> None:
         """Complete MFA — uses the endpoint matching the login flow that triggered it.
 
         For portal/ios flows, tries both /portal and /mobile MFA verify endpoints
@@ -1045,7 +1108,7 @@ class GarminAuth:
         """
         flow = getattr(self, "_mfa_flow", "portal")
         if flow == "widget":
-            self._complete_mfa_widget(mfa_code)
+            await self._complete_mfa_widget(mfa_code)
             return
 
         sess = self._mfa_session
@@ -1092,7 +1155,7 @@ class GarminAuth:
 
         for mfa_url, params, headers in mfa_endpoints:
             try:
-                r = sess.post(
+                r = await sess.post(
                     mfa_url,
                     params=params,
                     headers=headers,
@@ -1129,7 +1192,7 @@ class GarminAuth:
                     if flow == "ios"
                     else getattr(self, "_mfa_service_url", self._portal_service_url)
                 )
-                self._exchange_service_ticket(ticket, service_url=svc_url)
+                await self._exchange_service_ticket(ticket, service_url=svc_url)
                 return
 
             # Non-success JSON response — could be auth failure. Record only
@@ -1148,7 +1211,7 @@ class GarminAuth:
     #  DI TOKEN EXCHANGE                                                  #
     # ------------------------------------------------------------------ #
 
-    def _exchange_service_ticket(
+    async def _exchange_service_ticket(
         self, ticket: str, service_url: str | None = None
     ) -> None:
         """Exchange a CAS ticket for a DI Bearer token via diauth."""
@@ -1159,7 +1222,7 @@ class GarminAuth:
         di_client_id = None
 
         for client_id in DI_CLIENT_IDS:
-            r = _http_post(
+            r = await _http_post(
                 self._di_token_url,
                 headers=_native_headers(
                     {
@@ -1223,22 +1286,25 @@ class GarminAuth:
     #  TOKEN REFRESH                                                      #
     # ------------------------------------------------------------------ #
 
-    def _refresh_di_token(self) -> None:
-        """Refresh the DI Bearer token using the stored refresh token."""
-        with self._token_lock:
-            if not self.di_refresh_token or not self.di_client_id:
-                raise GarminAuthError("No DI refresh token available")
-            refresh_token = self.di_refresh_token
-            client_id = self.di_client_id
+    async def _refresh_di_token(self) -> None:
+        """Refresh the DI Bearer token using the stored refresh token.
+
+        Callers hold ``_token_lock``, so concurrent tasks never use the same
+        refresh token twice.
+        """
+        if not self.di_refresh_token or not self.di_client_id:
+            raise GarminAuthError("No DI refresh token available")
+        refresh_token = self.di_refresh_token
+        client_id = self.di_client_id
         # Only Garmin refusing the refresh token is an auth failure. Network
         # errors, rate limits and server errors are transient: the stored
         # tokens are still good, so they must not force a re-login.
         try:
-            r = _http_post(
+            r = await _http_post(
                 self._di_token_url,
                 headers=_native_headers(
                     {
-                        "Authorization": _build_basic_auth(self.di_client_id),
+                        "Authorization": _build_basic_auth(client_id),
                         "Accept": "application/json",
                         "Content-Type": "application/x-www-form-urlencoded",
                         "Cache-Control": "no-cache",
@@ -1251,7 +1317,7 @@ class GarminAuth:
                 },
                 timeout=30,
             )
-        except OSError as err:
+        except GarminConnectError as err:  # transport failure (network, DNS, TLS)
             raise GarminConnectionError(
                 f"DI token refresh failed: {_sanitize_exception_text(err)}"
             ) from err
@@ -1286,13 +1352,14 @@ class GarminAuth:
         find a different token once they hold the lock and reuse it instead of
         refreshing again.
         """
-        import asyncio
-
         if not self.is_authenticated:
             return False
 
         try:
-            await asyncio.to_thread(self._refresh_with_lock, rejected_token)
+            async with self._token_lock:
+                if rejected_token is not None and self.di_token != rejected_token:
+                    return True
+                await self._refresh_and_persist()
         except Exception as err:
             self.last_refresh_error = _sanitize_exception_text(err)
             self.last_refresh_exception = err
@@ -1302,28 +1369,24 @@ class GarminAuth:
         self.last_refresh_exception = None
         return True
 
-    def _sync_refresh_if_needed(self) -> None:
-        """Synchronously refresh the token if it expires soon.
+    async def refresh_if_expiring(self) -> None:
+        """Refresh the token if it expires within 15 minutes.
 
-        This is meant to be called from async code via asyncio.to_thread so
-        the check-then-refresh sequence is atomic under the instance token lock.
+        The check repeats under the lock: a task that waited while another one
+        refreshed sees the new token and does not refresh again. Refresh
+        errors propagate so the caller can decide whether they are transient.
         """
-        with self._token_lock:
+        if not self._token_expires_soon():
+            return
+        async with self._token_lock:
             if self._token_expires_soon():
-                self._refresh_with_lock()
+                await self._refresh_and_persist()
 
-    def _refresh_with_lock(self, rejected_token: str | None = None) -> None:
-        """Synchronous token refresh guarded by the instance token lock.
-
-        Skipped when ``rejected_token`` is given and another caller already
-        replaced it while this one waited for the lock.
-        """
-        with self._token_lock:
-            if rejected_token is not None and self.di_token != rejected_token:
-                return
-            self._refresh_di_token()
-            if self._tokenstore_path:
-                self._persist_tokens(self._tokenstore_path)
+    async def _refresh_and_persist(self) -> None:
+        """Refresh under the caller's lock and write the token file, if any."""
+        await self._refresh_di_token()
+        if self._tokenstore_path:
+            await asyncio.to_thread(self._persist_tokens, self._tokenstore_path)
 
     def _persist_tokens(self, path: str | None) -> None:
         """Persist tokens to *path*, logging a warning when the write fails.
@@ -1393,14 +1456,14 @@ class GarminAuth:
                 tmp.unlink()
             raise
 
-    def logout(self) -> None:
+    async def logout(self) -> None:
         """Drop all in-memory auth state and delete the persisted token file.
 
         Clears DI tokens, MFA state, and the remembered tokenstore path,
         then removes the on-disk token file (if any) so no usable
         credentials remain on this instance or in the tokenstore.
         """
-        self._clear_auth_state()
+        await self._clear_auth_state()
         path, self._tokenstore_path = self._tokenstore_path, None
         if path:
             try:
@@ -1431,20 +1494,9 @@ class GarminAuth:
             self.di_refresh_token = data.get("refresh_token")
             self.di_client_id = data.get("client_id")
 
-            if not self.is_authenticated:
-                return False
-
-            # Proactively refresh if token is expiring soon
-            if self.di_refresh_token and self._token_expires_soon():
-                _LOGGER.debug("Token expiring soon, refreshing proactively")
-                try:
-                    self._refresh_di_token()
-                except Exception as e:
-                    _LOGGER.debug(
-                        "Proactive refresh failed: %s", _sanitize_exception_text(e)
-                    )
-
-            return True
+            # An expiring token is refreshed by the client before its next
+            # request (refresh_if_expiring), so loading does no network I/O.
+            return self.is_authenticated
         except Exception as e:
             # Never log file contents or token values — type and message only.
             _LOGGER.warning("Failed to load tokens from %s: %s", p, type(e).__name__)

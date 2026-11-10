@@ -1,4 +1,4 @@
-.PHONY: install format lint test build publish clean
+.PHONY: install format lint test build publish clean fetch fetch-debug add-data
 
 # Python executable from venv
 PYTHON := .venv/bin/python
@@ -46,6 +46,21 @@ publish-test: build
 	$(PYTHON) -m twine upload --repository testpypi dist/*
 
 # Clean build artifacts
+# Run the async library against a real account, without Home Assistant.
+# Credentials: GARMIN_EMAIL / GARMIN_PASSWORD, or prompted; tokens are kept
+# in .garmin_tokens.json between runs.
+fetch:
+	$(PYTHON) scripts/test_fetch_data.py
+
+# Same, with asyncio debug mode: logs any callback that blocks the event loop
+# for more than 100 ms (what Home Assistant flags as blocking I/O).
+fetch-debug:
+	PYTHONASYNCIODEBUG=1 $(PYTHON) -X dev scripts/test_fetch_data.py
+
+# Interactive write actions (nutrition, hydration, blood pressure, uploads, ...).
+add-data:
+	$(PYTHON) scripts/test_add_data.py
+
 clean:
 	rm -rf build/
 	rm -rf dist/
@@ -72,5 +87,8 @@ help:
 	@echo "  build         - Build wheel and sdist"
 	@echo "  publish       - Publish to PyPI"
 	@echo "  publish-test  - Publish to Test PyPI"
+	@echo "  fetch         - Fetch all data from a real account (no Home Assistant)"
+	@echo "  fetch-debug   - fetch, reporting anything that blocks the event loop"
+	@echo "  add-data      - Interactive write actions against a real account"
 	@echo "  clean         - Remove build artifacts"
 	@echo "  all           - Run format, lint, and test"

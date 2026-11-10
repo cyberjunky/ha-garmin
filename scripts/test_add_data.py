@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Test script for ha_garmin write/action methods.
 
+Runs the async library standalone, without Home Assistant, on an injected
+aiohttp session like Home Assistant's.
+
 Usage:
-    python test_add_data.py
+    make add-data         (or: .venv/bin/python scripts/test_add_data.py)
 
 Tokens are loaded from .garmin_tokens.json if available (written by test_fetch_data.py).
 Credentials can be set via GARMIN_EMAIL / GARMIN_PASSWORD environment variables.
@@ -16,8 +19,10 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+import aiohttp
+
 from ha_garmin import GarminAuth, GarminClient
-from ha_garmin.exceptions import GarminAuthError
+from ha_garmin.exceptions import GarminAuthError, GarminMFARequired
 
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("ha_garmin").setLevel(logging.DEBUG)
@@ -41,7 +46,7 @@ MENU = [
 # ---------------------------------------------------------------------------
 
 
-async def get_client() -> GarminClient:
+async def get_client(session: aiohttp.ClientSession) -> GarminClient:
     auth = GarminAuth()
 
     if auth.load_session(TOKEN_FILE):
@@ -57,12 +62,10 @@ async def get_client() -> GarminClient:
             password = getpass.getpass("Garmin Password: ")
 
         try:
-            from ha_garmin.exceptions import GarminMFARequired
-
-            auth.login(email, password)
+            await auth.login(email, password)
         except GarminMFARequired:
             mfa_code = input("MFA code: ").strip()
-            auth.complete_mfa(mfa_code)
+            await auth.complete_mfa(mfa_code)
         except Exception as e:
             print(f"Login failed: {e}")
             raise
@@ -70,7 +73,7 @@ async def get_client() -> GarminClient:
         auth.save_session(TOKEN_FILE)
         print(f"Session saved to {TOKEN_FILE}\n")
 
-    return GarminClient(auth)
+    return GarminClient(auth, session=session)
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +204,13 @@ async def main() -> None:
     print("  ha_garmin — write/action test script")
     print("=" * 50)
 
-    client = await get_client()
+    # One shared session for the data API, as Home Assistant would inject it.
+    async with aiohttp.ClientSession() as session:
+        await run(session)
+
+
+async def run(session: aiohttp.ClientSession) -> None:
+    client = await get_client(session)
 
     while True:
         print("\nSelect action:")
@@ -227,7 +236,7 @@ async def main() -> None:
         except GarminAuthError:
             print("\nSession expired — please log in again.")
             TOKEN_FILE.unlink(missing_ok=True)
-            client = await get_client()
+            client = await get_client(session)
             try:
                 await HANDLERS[key](client)
             except Exception as e:
