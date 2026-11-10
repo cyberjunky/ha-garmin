@@ -71,6 +71,8 @@ from .const import (
 from .exceptions import (
     GarminAPIError,
     GarminAuthError,
+    GarminConnectError,
+    GarminConnectionError,
     GarminRateLimitError,
     GarminTLSError,
 )
@@ -107,6 +109,32 @@ def _cert_verification_failure(err: BaseException) -> str | None:
     if "CERTIFICATE_VERIFY_FAILED" in str(err):
         return "certificate verify failed"
     return None
+
+
+def _transport_error(err: BaseException, url: str) -> GarminConnectError:
+    """Map a transport failure (connection, DNS, timeout, TLS) to a library error."""
+    _LOGGER.debug("Request to %s failed: %s", url, err)
+    if (reason := _cert_verification_failure(err)) is not None:
+        host = urlsplit(url).hostname
+        return GarminTLSError(
+            f"TLS certificate for {host} could not be verified ({reason}). "
+            "The connection to Garmin is being intercepted or redirected "
+            "by a proxy, HTTPS inspection or DNS filter on this network; "
+            f"exclude {host} from it"
+        )
+    return GarminAPIError(f"Request failed: {err}")
+
+
+async def _send(url: str, func: Any, *args: Any) -> Any:
+    """Run a blocking HTTP call in a thread, mapping transport failures.
+
+    requests raises RequestException (an OSError) for connection, DNS and
+    timeout failures; callers expect GarminConnectError subclasses only.
+    """
+    try:
+        return await asyncio.to_thread(func, *args)
+    except OSError as err:
+        raise _transport_error(err, url) from err
 
 
 def _parse_connect_iq_value(raw: Any, precision: Any) -> Any:
@@ -1018,7 +1046,9 @@ def _add_computed_fields(data: dict[str, Any]) -> dict[str, Any]:
     # === HRV: flatten nested structure ===
     hrv = result.get("hrvStatus") or {}
     if hrv:
-        result["hrvStatusText"] = (hrv.get("status") or "").capitalize()
+        # None, not "", when Garmin has no status yet, so callers can tell
+        # "no value" from a real status.
+        result["hrvStatusText"] = (hrv.get("status") or "").capitalize() or None
         result["hrvWeeklyAvg"] = hrv.get("weeklyAvg")
         result["hrvLastNightAvg"] = hrv.get("lastNightAvg")
         result["hrvLastNight5MinHigh"] = hrv.get("lastNight5MinHigh")
@@ -1312,12 +1342,32 @@ class GarminClient:
                 if self._auth._token_expires_soon():
                     self._auth._refresh_with_lock()
 
-        await asyncio.to_thread(_check)
+        try:
+            await asyncio.to_thread(_check)
+        except (GarminConnectionError, GarminRateLimitError) as err:
+            # Transient: the current token is still valid for a while, so
+            # carry on with it. If it has already expired, the request gets
+            # a 401 and the refresh is retried there.
+            _LOGGER.debug("Proactive token refresh failed, continuing: %s", err)
 
-    def _session_expired_error(self) -> GarminAuthError:
-        """Build the error for a 401 whose token refresh failed, with its cause."""
+    def _session_expired_error(self) -> GarminConnectError:
+        """Build the error for a 401 whose token refresh failed, with its cause.
+
+        A transient refresh failure (network, 429, 5xx) leaves the stored
+        tokens valid, so it keeps its own type and the caller retries later;
+        only a refused refresh token becomes an auth error demanding re-login.
+        """
         cause = self._auth.last_refresh_error
         detail = f": {cause}" if cause else ""
+        exc = self._auth.last_refresh_exception
+        if isinstance(exc, GarminRateLimitError):
+            return GarminRateLimitError(
+                f"Session expired, token refresh failed{detail}"
+            )
+        if isinstance(exc, GarminConnectionError):
+            return GarminConnectionError(
+                f"Session expired, token refresh failed{detail}"
+            )
         return GarminAuthError(f"Session expired, re-login required{detail}")
 
     async def _request(
@@ -1439,19 +1489,10 @@ class GarminClient:
             _LOGGER.debug("API response from %s: %s", url, str(result)[:5000])
             return result
 
-        except (GarminAPIError, GarminAuthError, GarminRateLimitError):
+        except GarminConnectError:
             raise
         except Exception as err:
-            _LOGGER.debug("Request to %s failed: %s", url, err)
-            if (reason := _cert_verification_failure(err)) is not None:
-                host = urlsplit(url).hostname
-                raise GarminTLSError(
-                    f"TLS certificate for {host} could not be verified ({reason}). "
-                    "The connection to Garmin is being intercepted or redirected "
-                    "by a proxy, HTTPS inspection or DNS filter on this network; "
-                    f"exclude {host} from it"
-                ) from err
-            raise GarminAPIError(f"Request failed: {err}") from err
+            raise _transport_error(err, url) from err
 
     async def _request_bytes(self, url: str) -> bytes:
         """Make authenticated GET request returning raw response bytes.
@@ -1477,13 +1518,13 @@ class GarminClient:
         def _do_request(hdrs: dict[str, str]) -> Any:
             return stdlib_requests.get(full_url, headers=hdrs, timeout=60)
 
-        response = await asyncio.to_thread(_do_request, _headers())
+        response = await _send(full_url, _do_request, _headers())
 
         if response.status_code == 401:
             _LOGGER.debug("Session expired, refreshing")
             if not await self._auth.refresh_session():
                 raise self._session_expired_error()
-            response = await asyncio.to_thread(_do_request, _headers())
+            response = await _send(full_url, _do_request, _headers())
 
         if response.status_code != 200:
             raise GarminAPIError(
@@ -2321,7 +2362,7 @@ class GarminClient:
                 full_url, headers=hdrs, json=json_data, timeout=30
             )
 
-        response = await asyncio.to_thread(_do_post, headers)
+        response = await _send(full_url, _do_post, headers)
 
         if response.status_code == 401:
             _LOGGER.debug("401 on POST - attempting token refresh")
@@ -2331,7 +2372,7 @@ class GarminClient:
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             headers["Content-Type"] = "application/json"
-            response = await asyncio.to_thread(_do_post, headers)
+            response = await _send(full_url, _do_post, headers)
 
         if response.status_code not in (200, 201, 204):
             _LOGGER.error("POST failed %s", response.status_code)
@@ -2371,7 +2412,7 @@ class GarminClient:
                 full_url, headers=hdrs, json=json_data, timeout=30
             )
 
-        response = await asyncio.to_thread(_do_put, headers)
+        response = await _send(full_url, _do_put, headers)
 
         if response.status_code == 401:
             _LOGGER.debug("401 on PUT - attempting token refresh")
@@ -2382,7 +2423,7 @@ class GarminClient:
             headers.update(DEFAULT_HEADERS)
             if json_data is not None:
                 headers["Content-Type"] = "application/json"
-            response = await asyncio.to_thread(_do_put, headers)
+            response = await _send(full_url, _do_put, headers)
 
         if response.status_code not in (200, 201, 204):
             raise GarminAPIError(
@@ -2408,13 +2449,13 @@ class GarminClient:
         def _do_delete(hdrs: dict[str, str]) -> Any:
             return stdlib_requests.delete(full_url, headers=hdrs, timeout=30)
 
-        response = await asyncio.to_thread(_do_delete, headers)
+        response = await _send(full_url, _do_delete, headers)
 
         if response.status_code == 401:
             await self._auth.refresh_session()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
-            response = await asyncio.to_thread(_do_delete, headers)
+            response = await _send(full_url, _do_delete, headers)
             if response.status_code not in (200, 204):
                 raise GarminAPIError(
                     f"DELETE failed: {response.status_code}", response.status_code
@@ -2460,13 +2501,13 @@ class GarminClient:
             }
             return stdlib_requests.post(full_url, headers=hdrs, files=files, timeout=60)
 
-        response = await asyncio.to_thread(_do_upload, headers)
+        response = await _send(full_url, _do_upload, headers)
 
         if response.status_code == 401:
             await self._auth.refresh_session()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
-            response = await asyncio.to_thread(_do_upload, headers)
+            response = await _send(full_url, _do_upload, headers)
             if response.status_code not in (200, 201):
                 raise GarminAPIError(
                     f"FIT upload failed: {response.status_code}", response.status_code
@@ -2930,11 +2971,18 @@ class GarminClient:
             import zipfile
 
             def _extract() -> bytes:
-                with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    names = zf.namelist()
-                    if not names:
-                        raise GarminAPIError(f"Activity {activity_id} archive is empty")
-                    return zf.read(names[0])
+                try:
+                    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                        names = zf.namelist()
+                        if not names:
+                            raise GarminAPIError(
+                                f"Activity {activity_id} archive is empty"
+                            )
+                        return zf.read(names[0])
+                except (zipfile.BadZipFile, zipfile.LargeZipFile) as err:
+                    raise GarminAPIError(
+                        f"Activity {activity_id} archive is invalid: {err}"
+                    ) from err
 
             content = await asyncio.to_thread(_extract)
 
@@ -2983,14 +3031,14 @@ class GarminClient:
             files = {"file": (_sanitize_filename(path.name), file_bytes, content_type)}
             return stdlib_requests.post(full_url, headers=hdrs, files=files, timeout=60)
 
-        response = await asyncio.to_thread(_do_upload, headers)
+        response = await _send(full_url, _do_upload, headers)
 
         if response.status_code == 403:
             _LOGGER.debug("Upload got 403, refreshing token and retrying")
             await self._auth.refresh_session()
             headers = self._auth.get_api_headers()
             headers["User-Agent"] = "GCM-iOS-5.7.2.1"
-            response = await asyncio.to_thread(_do_upload, headers)
+            response = await _send(full_url, _do_upload, headers)
 
         try:
             body = response.json()

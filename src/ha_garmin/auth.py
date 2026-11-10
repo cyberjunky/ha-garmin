@@ -36,6 +36,7 @@ except ImportError:
 from .exceptions import (
     GarminAPIError,
     GarminAuthError,
+    GarminConnectionError,
     GarminMFARequired,
     GarminRateLimitError,
 )
@@ -250,6 +251,9 @@ class GarminAuth:
         # Sanitized cause of the last failed refresh_session(), so the
         # "re-login required" error callers raise can say why.
         self.last_refresh_error: str | None = None
+        # The exception behind last_refresh_error, so callers can tell a
+        # transient failure (network, 429, 5xx) from a refused refresh token.
+        self.last_refresh_exception: Exception | None = None
 
     @property
     def is_authenticated(self) -> bool:
@@ -1232,25 +1236,37 @@ class GarminAuth:
                 raise GarminAuthError("No DI refresh token available")
             refresh_token = self.di_refresh_token
             client_id = self.di_client_id
-        r = _http_post(
-            self._di_token_url,
-            headers=_native_headers(
-                {
-                    "Authorization": _build_basic_auth(self.di_client_id),
-                    "Accept": "application/json",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Cache-Control": "no-cache",
-                }
-            ),
-            data={
-                "grant_type": "refresh_token",
-                "client_id": client_id,
-                "refresh_token": refresh_token,
-            },
-            timeout=30,
-        )
+        # Only Garmin refusing the refresh token is an auth failure. Network
+        # errors, rate limits and server errors are transient: the stored
+        # tokens are still good, so they must not force a re-login.
+        try:
+            r = _http_post(
+                self._di_token_url,
+                headers=_native_headers(
+                    {
+                        "Authorization": _build_basic_auth(self.di_client_id),
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Cache-Control": "no-cache",
+                    }
+                ),
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "refresh_token": refresh_token,
+                },
+                timeout=30,
+            )
+        except OSError as err:
+            raise GarminConnectionError(
+                f"DI token refresh failed: {_sanitize_exception_text(err)}"
+            ) from err
         if r.status_code == 429:
             raise GarminRateLimitError("DI token refresh rate limited (429)")
+        if r.status_code >= 500:
+            raise GarminConnectionError(
+                f"DI token refresh failed: HTTP {r.status_code}"
+            )
         if not r.ok:
             raise GarminAuthError(f"DI token refresh failed: HTTP {r.status_code}")
         data = r.json()
@@ -1271,9 +1287,11 @@ class GarminAuth:
             await asyncio.to_thread(self._refresh_with_lock)
         except Exception as err:
             self.last_refresh_error = _sanitize_exception_text(err)
+            self.last_refresh_exception = err
             _LOGGER.debug("DI token refresh failed: %s", self.last_refresh_error)
             return False
         self.last_refresh_error = None
+        self.last_refresh_exception = None
         return True
 
     def _sync_refresh_if_needed(self) -> None:

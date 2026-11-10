@@ -36,6 +36,16 @@ class GarminAPIError(GarminConnectError):
         self.status_code = status_code
 
 
+class GarminConnectionError(GarminConnectError):
+    """Garmin could not refresh the session for a transient reason.
+
+    Raised when the token refresh fails on a network error or a 5xx: the
+    stored tokens are still valid, so this must not lead to a re-login.
+    Deliberately not a GarminAPIError, so a fetch aborts and is retried on
+    the next poll instead of returning partial data.
+    """
+
+
 class GarminTLSError(GarminConnectError):
     """The TLS certificate presented for a Garmin host could not be verified.
 

@@ -3740,3 +3740,101 @@ async def test_401_with_failed_refresh_reports_cause() -> None:
         pytest.raises(GarminAuthError, match=r"re-login required: .*HTTP 400"),
     ):
         await client._request("GET", "https://connectapi.garmin.com/test")
+
+
+# --- Transport and refresh failure handling --------------------------------
+
+
+def test_hrv_status_text_is_none_without_status() -> None:
+    """A missing HRV status must be None, not an empty string."""
+    from ha_garmin.client import _add_computed_fields
+
+    result = _add_computed_fields({"hrvStatus": {"weeklyAvg": 40}})
+    assert result["hrvStatusText"] is None
+    result = _add_computed_fields({"hrvStatus": {"status": "BALANCED"}})
+    assert result["hrvStatusText"] == "Balanced"
+
+
+async def test_post_network_error_maps_to_api_error() -> None:
+    """A connection error on a POST must surface as GarminAPIError."""
+    import requests
+
+    client = GarminClient(_make_auth())
+    with (
+        patch("requests.post", side_effect=requests.ConnectionError("down")),
+        pytest.raises(GarminAPIError, match="down"),
+    ):
+        await client._post_request(f"{GARMIN_CONNECT_API}/test", {})
+
+
+async def test_upload_activity_network_error_maps_to_api_error(tmp_path) -> None:
+    """A timeout while uploading an activity must surface as GarminAPIError."""
+    import requests
+
+    fit = tmp_path / "ride.fit"
+    fit.write_bytes(b"fit")
+    client = GarminClient(_make_auth())
+    with (
+        patch("requests.post", side_effect=requests.Timeout("slow")),
+        pytest.raises(GarminAPIError, match="slow"),
+    ):
+        await client.upload_activity(str(fit))
+
+
+async def test_download_fit_invalid_archive_maps_to_api_error() -> None:
+    """A FIT download that is not a valid zip must surface as GarminAPIError."""
+    client = GarminClient(_make_auth())
+    resp = MagicMock(status_code=200, content=b"not a zip")
+    with (
+        patch("requests.get", return_value=resp),
+        pytest.raises(GarminAPIError, match="archive is invalid"),
+    ):
+        await client.download_activity(12345, "fit")
+
+
+@pytest.mark.parametrize(
+    ("refresh_error", "expected"),
+    [
+        ("connection", "GarminConnectionError"),
+        (503, "GarminConnectionError"),
+        (429, "GarminRateLimitError"),
+        (400, "GarminAuthError"),
+    ],
+)
+async def test_401_refresh_failure_type(refresh_error, expected) -> None:
+    """Only a refused refresh token demands re-login; transient failures don't."""
+    import ha_garmin.exceptions as exc_mod
+
+    auth = _make_auth()
+    auth.di_refresh_token = "refresh"
+    auth.di_client_id = "CID"
+    client = GarminClient(auth)
+    if refresh_error == "connection":
+        post = {"side_effect": OSError("network unreachable")}
+    else:
+        post = {"return_value": MagicMock(ok=False, status_code=refresh_error)}
+    with (
+        patch("requests.Session.request", return_value=_mock_response({}, 401)),
+        patch("ha_garmin.auth._http_post", **post),
+        pytest.raises(getattr(exc_mod, expected)) as err,
+    ):
+        await client._request("GET", f"{GARMIN_CONNECT_API}/test")
+    if expected != "GarminAuthError":
+        assert not isinstance(err.value, GarminAuthError)
+
+
+async def test_proactive_refresh_transient_failure_uses_current_token() -> None:
+    """A transient proactive refresh failure must not fail the request."""
+    from ha_garmin.exceptions import GarminConnectionError
+
+    client = GarminClient(_make_auth())
+    with (
+        patch.object(client._auth, "_token_expires_soon", return_value=True),
+        patch.object(
+            client._auth,
+            "_refresh_with_lock",
+            side_effect=GarminConnectionError("DI token refresh failed: HTTP 503"),
+        ),
+        patch("requests.Session.request", return_value=_mock_response({"ok": 1})),
+    ):
+        assert await client._request("GET", f"{GARMIN_CONNECT_API}/test") == {"ok": 1}
