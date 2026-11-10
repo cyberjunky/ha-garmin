@@ -1269,22 +1269,36 @@ class GarminAuth:
             )
         if not r.ok:
             raise GarminAuthError(f"DI token refresh failed: HTTP {r.status_code}")
-        data = r.json()
-        self.di_token = data["access_token"]
+        try:
+            data = r.json()
+            access_token = data["access_token"]
+        except (ValueError, KeyError, TypeError) as err:
+            # Garmin answered 200 without a token: a server-side glitch, not a
+            # refused refresh token, so the stored tokens stay usable.
+            raise GarminConnectionError(
+                "DI token refresh failed: response without an access token"
+            ) from err
+        self.di_token = access_token
         self.di_refresh_token = data.get("refresh_token", self.di_refresh_token)
         self.di_client_id = (
             self._extract_client_id_from_jwt(self.di_token) or self.di_client_id
         )
 
-    async def refresh_session(self) -> bool:
-        """Refresh DI Bearer token using the stored refresh token."""
+    async def refresh_session(self, rejected_token: str | None = None) -> bool:
+        """Refresh DI Bearer token using the stored refresh token.
+
+        ``rejected_token`` is the token a request was refused with. When
+        several requests get a 401 at once, the first refreshes; the others
+        find a different token once they hold the lock and reuse it instead of
+        refreshing again.
+        """
         import asyncio
 
         if not self.is_authenticated:
             return False
 
         try:
-            await asyncio.to_thread(self._refresh_with_lock)
+            await asyncio.to_thread(self._refresh_with_lock, rejected_token)
         except Exception as err:
             self.last_refresh_error = _sanitize_exception_text(err)
             self.last_refresh_exception = err
@@ -1304,9 +1318,15 @@ class GarminAuth:
             if self._token_expires_soon():
                 self._refresh_with_lock()
 
-    def _refresh_with_lock(self) -> None:
-        """Synchronous token refresh guarded by the instance token lock."""
+    def _refresh_with_lock(self, rejected_token: str | None = None) -> None:
+        """Synchronous token refresh guarded by the instance token lock.
+
+        Skipped when ``rejected_token`` is given and another caller already
+        replaced it while this one waited for the lock.
+        """
         with self._token_lock:
+            if rejected_token is not None and self.di_token != rejected_token:
+                return
             self._refresh_di_token()
             if self._tokenstore_path:
                 self._persist_tokens(self._tokenstore_path)

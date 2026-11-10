@@ -3838,3 +3838,69 @@ async def test_proactive_refresh_transient_failure_uses_current_token() -> None:
         patch("requests.Session.request", return_value=_mock_response({"ok": 1})),
     ):
         assert await client._request("GET", f"{GARMIN_CONNECT_API}/test") == {"ok": 1}
+
+
+# --- Write call hardening ----------------------------------------------------
+
+
+def _non_json_ok() -> MagicMock:
+    resp = MagicMock(status_code=200)
+    resp.json.side_effect = ValueError("Expecting value")
+    return resp
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "target"),
+    [
+        ("_post_request", (f"{GARMIN_CONNECT_API}/x", {}), "requests.post"),
+        ("_put_request", (f"{GARMIN_CONNECT_API}/x", {}), "requests.put"),
+        ("_delete_request", (f"{GARMIN_CONNECT_API}/x",), "requests.delete"),
+        ("_upload_fit_file", (b"fit",), "requests.post"),
+    ],
+)
+async def test_write_with_non_json_body_raises_api_error(method, args, target) -> None:
+    """A 200 whose body isn't JSON is a GarminAPIError, not a bare JSONDecodeError."""
+    client = GarminClient(_make_auth())
+    with (
+        patch(target, return_value=_non_json_ok()),
+        pytest.raises(GarminAPIError, match="invalid JSON"),
+    ):
+        await getattr(client, method)(*args)
+
+
+@pytest.mark.parametrize(
+    ("method", "args", "target"),
+    [
+        ("_delete_request", (f"{GARMIN_CONNECT_API}/x",), "requests.delete"),
+        ("_upload_fit_file", (b"fit",), "requests.post"),
+    ],
+)
+async def test_delete_and_fit_upload_refresh_like_other_writes(
+    method, args, target
+) -> None:
+    """DELETE and FIT upload check auth, refresh proactively and honour a failed refresh."""
+    with pytest.raises(GarminAuthError, match="Not authenticated"):
+        await getattr(GarminClient(GarminAuth()), method)(*args)
+
+    client = GarminClient(_make_auth())
+    with (
+        patch.object(client, "_ensure_token_fresh", AsyncMock()) as proactive,
+        patch.object(client._auth, "refresh_session", AsyncMock(return_value=False)),
+        patch(target, return_value=_mock_response({}, 401)),
+        pytest.raises(GarminAuthError, match="re-login required"),
+    ):
+        await getattr(client, method)(*args)
+    proactive.assert_awaited_once()
+
+
+async def test_401_passes_the_rejected_token_to_refresh() -> None:
+    """The client tells auth which token was refused, so parallel 401s refresh once."""
+    client = GarminClient(_make_auth("tok_1"))
+    refresh = AsyncMock(return_value=False)
+    with (
+        patch.object(client._auth, "refresh_session", refresh),
+        patch("requests.Session.request", return_value=_mock_response({}, 401)),
+        pytest.raises(GarminAuthError),
+    ):
+        await client._request("GET", f"{GARMIN_CONNECT_API}/test")
+    refresh.assert_awaited_once_with(rejected_token="tok_1")

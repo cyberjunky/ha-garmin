@@ -639,3 +639,51 @@ def test_di_exchange_failure_log_omits_response_body(caplog):
         auth._exchange_service_ticket("ST-CANARY-TICKET-123")
     assert "HTTP 400" in caplog.text
     assert "ST-CANARY-TICKET-123" not in caplog.text
+
+
+# ── Refresh hardening ─────────────────────────────────────────────────────────
+
+
+def _refresh_auth() -> GarminAuth:
+    auth = GarminAuth()
+    auth.di_token = "old_token"
+    auth.di_refresh_token = "refresh"
+    auth.di_client_id = "CID"
+    return auth
+
+
+async def test_concurrent_401s_refresh_once() -> None:
+    """Requests refused with the same token share one refresh."""
+    import asyncio
+
+    auth = _refresh_auth()
+    reply = MagicMock(ok=True, status_code=200)
+    reply.json.return_value = {"access_token": "new_token"}
+    with patch("ha_garmin.auth._http_post", return_value=reply) as post:
+        results = await asyncio.gather(
+            *(auth.refresh_session(rejected_token="old_token") for _ in range(3))
+        )
+    assert results == [True, True, True]
+    assert auth.di_token == "new_token"
+    post.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "json_result",
+    [ValueError("not JSON"), {}],
+    ids=["non-json", "no-access-token"],
+)
+async def test_refresh_without_access_token_is_transient(json_result) -> None:
+    """A 200 without a token is a Garmin glitch, not a refused refresh token."""
+    from ha_garmin.exceptions import GarminConnectionError
+
+    auth = _refresh_auth()
+    reply = MagicMock(ok=True, status_code=200)
+    if isinstance(json_result, Exception):
+        reply.json.side_effect = json_result
+    else:
+        reply.json.return_value = json_result
+    with patch("ha_garmin.auth._http_post", return_value=reply):
+        assert await auth.refresh_session() is False
+    assert isinstance(auth.last_refresh_exception, GarminConnectionError)
+    assert auth.di_token == "old_token"
