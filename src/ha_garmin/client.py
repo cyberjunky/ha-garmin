@@ -1314,6 +1314,12 @@ class GarminClient:
 
         await asyncio.to_thread(_check)
 
+    def _session_expired_error(self) -> GarminAuthError:
+        """Build the error for a 401 whose token refresh failed, with its cause."""
+        cause = self._auth.last_refresh_error
+        detail = f": {cause}" if cause else ""
+        return GarminAuthError(f"Session expired, re-login required{detail}")
+
     async def _request(
         self,
         method: str,
@@ -1362,7 +1368,7 @@ class GarminClient:
                 _LOGGER.debug("Session expired, refreshing")
                 refreshed = await self._auth.refresh_session()
                 if not refreshed:
-                    raise GarminAuthError("Session expired, re-login required")
+                    raise self._session_expired_error()
                 headers = self._auth.get_api_headers()
                 response = await asyncio.to_thread(_do_request)
                 if response.status_code not in (200, 204, 404):
@@ -1476,7 +1482,7 @@ class GarminClient:
         if response.status_code == 401:
             _LOGGER.debug("Session expired, refreshing")
             if not await self._auth.refresh_session():
-                raise GarminAuthError("Session expired, re-login required")
+                raise self._session_expired_error()
             response = await asyncio.to_thread(_do_request, _headers())
 
         if response.status_code != 200:
@@ -2321,7 +2327,7 @@ class GarminClient:
             _LOGGER.debug("401 on POST - attempting token refresh")
             refreshed = await self._auth.refresh_session()
             if not refreshed:
-                raise GarminAuthError("Session expired, re-login required")
+                raise self._session_expired_error()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             headers["Content-Type"] = "application/json"
@@ -2371,7 +2377,7 @@ class GarminClient:
             _LOGGER.debug("401 on PUT - attempting token refresh")
             refreshed = await self._auth.refresh_session()
             if not refreshed:
-                raise GarminAuthError("Session expired, re-login required")
+                raise self._session_expired_error()
             headers = self._auth.get_api_headers()
             headers.update(DEFAULT_HEADERS)
             if json_data is not None:

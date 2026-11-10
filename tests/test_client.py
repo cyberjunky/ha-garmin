@@ -3725,3 +3725,18 @@ class TestLifetimeTotals:
             data = await client.fetch_goals_data()
             assert data["lifetimeTotalsHidden"] is False
         assert lifetime.await_count == 2
+
+
+async def test_401_with_failed_refresh_reports_cause() -> None:
+    """The re-login error must carry why the token refresh failed."""
+    client = GarminClient(_make_auth())
+    with (
+        patch("requests.Session.request", return_value=_mock_response({}, 401)),
+        patch.object(
+            client._auth,
+            "_refresh_di_token",
+            side_effect=GarminAuthError("DI token refresh failed: HTTP 400"),
+        ),
+        pytest.raises(GarminAuthError, match=r"re-login required: .*HTTP 400"),
+    ):
+        await client._request("GET", "https://connectapi.garmin.com/test")
