@@ -404,10 +404,10 @@ class GarminAuth:
         web: list[tuple[str, Callable[[], Awaitable[AuthResult]]]] = [
             ("widget+cffi", lambda: self._widget_web_login(email, password)),
             ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
-            (
-                "portal+aiohttp",
-                lambda: self._portal_web_login_requests(email, password),
-            ),
+            # No plain-HTTP portal strategy: the portal answers Python clients
+            # without a browser TLS fingerprint with a Cloudflare 403 or
+            # CAPTCHA_REQUIRED (seen with both requests and aiohttp), so it
+            # could only add its 30-45 s delay before failing.
         ]
         return web + mobile if self._is_cn else mobile + web
 
@@ -677,6 +677,11 @@ class GarminAuth:
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
+
+        if resp_type == "CAPTCHA_REQUIRED":
+            # Garmin wants a CAPTCHA this client can't solve: blocked, like a
+            # 429, so the next strategy is tried and the summary says so.
+            raise GarminRateLimitError("Login blocked: Garmin requires a CAPTCHA")
 
         # Check for 429 buried inside JSON error body
         if res.get("error", {}).get("status-code") == "429":
@@ -968,17 +973,6 @@ class GarminAuth:
         raise GarminAPIError("portal+cffi: no impersonations available")
 
     # ------------------------------------------------------------------ #
-    #  STRATEGY 5 — Portal web + plain aiohttp                           #
-    # ------------------------------------------------------------------ #
-
-    async def _portal_web_login_requests(self, email: str, password: str) -> AuthResult:
-        """Portal login with a plain aiohttp session (no TLS fingerprinting)."""
-        return await self._with_session(
-            LoginSession(),
-            lambda sess: self._do_portal_web_login(sess, email, password),
-        )
-
-    # ------------------------------------------------------------------ #
     #  Shared portal login logic                                          #
     # ------------------------------------------------------------------ #
 
@@ -1083,6 +1077,11 @@ class GarminAuth:
 
         if resp_type == "INVALID_USERNAME_PASSWORD":
             raise GarminAuthError("401 Unauthorized (Invalid Username or Password)")
+
+        if resp_type == "CAPTCHA_REQUIRED":
+            # Garmin wants a CAPTCHA this client can't solve: blocked, like a
+            # 429, so the next strategy is tried and the summary says so.
+            raise GarminRateLimitError("Login blocked: Garmin requires a CAPTCHA")
 
         # Check for 429 buried inside JSON error body
         if res.get("error", {}).get("status-code") == "429":

@@ -176,7 +176,6 @@ class TestGarminAuth:
             patch.object(auth, "_mobile_login_requests", side_effect=strategy),
             patch.object(auth, "_widget_web_login", side_effect=strategy),
             patch.object(auth, "_portal_web_login_cffi", side_effect=strategy),
-            patch.object(auth, "_portal_web_login_requests", side_effect=strategy),
             patch(
                 "ha_garmin.auth.impersonated_request",
                 AsyncMock(return_value=_resp(status)),
@@ -241,9 +240,6 @@ class TestGarminAuth:
             patch.object(auth, "_mobile_login_requests", side_effect=second_strategy),
             patch.object(auth, "_widget_web_login", side_effect=first_strategy),
             patch.object(auth, "_portal_web_login_cffi", side_effect=second_strategy),
-            patch.object(
-                auth, "_portal_web_login_requests", side_effect=second_strategy
-            ),
             patch.object(
                 auth, "_verify_token", side_effect=lambda: next(verify_results)
             ),
@@ -716,7 +712,7 @@ class TestGarminAuth:
             patch("ha_garmin.auth.asyncio.sleep", sleep),
             pytest.raises(GarminAuthError, match="Invalid Username"),
         ):
-            await auth._portal_web_login_requests("u@x.com", "pw")
+            await auth._portal_web_login_cffi("u@x.com", "pw")
         (made_sess,) = made
         sleep.assert_awaited_once()
         assert LOGIN_DELAY_MIN_S <= sleep.await_args.args[0] <= LOGIN_DELAY_MAX_S
@@ -904,7 +900,6 @@ class TestSecurityAuditHardening:
             patch.object(auth, "_mobile_login_requests", side_effect=fail),
             patch.object(auth, "_widget_web_login", side_effect=fail),
             patch.object(auth, "_portal_web_login_cffi", side_effect=fail),
-            patch.object(auth, "_portal_web_login_requests", side_effect=fail),
             pytest.raises(GarminAPIError, match="exhausted"),
         ):
             await auth.login("u@x.com", "pw")
@@ -925,7 +920,6 @@ class TestSecurityAuditHardening:
             patch.object(auth, "_mobile_login_requests", side_effect=boom),
             patch.object(auth, "_widget_web_login", side_effect=boom),
             patch.object(auth, "_portal_web_login_cffi", side_effect=boom),
-            patch.object(auth, "_portal_web_login_requests", side_effect=boom),
             caplog.at_level("DEBUG", logger="ha_garmin.auth"),
             pytest.raises(GarminAPIError, match="exhausted") as exc_info,
         ):
@@ -944,7 +938,6 @@ class TestSecurityAuditHardening:
             patch.object(auth, "_mobile_login_requests", side_effect=boom),
             patch.object(auth, "_widget_web_login", side_effect=boom),
             patch.object(auth, "_portal_web_login_cffi", side_effect=boom),
-            patch.object(auth, "_portal_web_login_requests", side_effect=boom),
             caplog.at_level("WARNING", logger="ha_garmin.auth"),
             pytest.raises(GarminAPIError, match="ConnectionError; ") as exc_info,
         ):
@@ -1084,10 +1077,9 @@ def test_login_strategy_order() -> None:
         "mobile+aiohttp",
         "widget+cffi",
         "portal+cffi",
-        "portal+aiohttp",
     ]
     cn = [n for n, _ in GarminAuth(is_cn=True)._login_strategies("e", "p")]
-    assert cn[:3] == ["widget+cffi", "portal+cffi", "portal+aiohttp"]
+    assert cn[:2] == ["widget+cffi", "portal+cffi"]
 
 
 async def test_login_with_strategy_runs_only_that_strategy() -> None:
@@ -1124,3 +1116,23 @@ async def test_login_with_unknown_strategy() -> None:
     """An unknown strategy name lists the valid ones."""
     with pytest.raises(ValueError, match="mobile\\+cffi"):
         await GarminAuth().login_with_strategy("carrier-pigeon", "e", "p")
+
+
+@pytest.mark.parametrize("flow", ["mobile", "portal"])
+async def test_captcha_required_counts_as_blocked(flow: str) -> None:
+    """CAPTCHA_REQUIRED means this client is blocked, like a 429, not an unknown reply."""
+    auth = GarminAuth()
+    captcha = HttpResponse(
+        status_code=200,
+        content=json.dumps({"responseStatus": {"type": "CAPTCHA_REQUIRED"}}).encode(),
+    )
+    page = HttpResponse(status_code=200, content=b"<html/>")
+    login = (
+        auth._mobile_login_requests if flow == "mobile" else auth._portal_web_login_cffi
+    )
+    with (
+        fake_login_sessions(*([([page], [captcha])] * 6)),
+        patch("ha_garmin.auth.asyncio.sleep", AsyncMock()),
+        pytest.raises(GarminRateLimitError, match="CAPTCHA"),
+    ):
+        await login("u@x.com", "pw")
