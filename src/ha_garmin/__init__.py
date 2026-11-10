@@ -5,6 +5,7 @@ from .client import GarminClient
 from .exceptions import (
     GarminAuthError,
     GarminConnectError,
+    GarminConnectionError,
     GarminMFARequired,
     GarminRateLimitError,
     GarminTLSError,
@@ -15,6 +16,7 @@ __all__ = [
     "GarminAuthError",
     "GarminClient",
     "GarminConnectError",
+    "GarminConnectionError",
     "GarminMFARequired",
     "GarminRateLimitError",
     "GarminTLSError",
