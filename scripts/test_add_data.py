@@ -175,7 +175,7 @@ async def do_create_activity(client: GarminClient) -> None:
 async def do_upload_activity(client: GarminClient) -> None:
     """Upload a FIT / GPX / TCX activity file."""
     print("\n--- Upload Activity File ---")
-    file_path = await ainput("File path (FIT/GPX/TCX): ").strip()
+    file_path = await ainput("File path (FIT/GPX/TCX): ")
     if not file_path:
         print("No path given, skipping.")
         return
