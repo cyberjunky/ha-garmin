@@ -46,6 +46,16 @@ MENU = [
 # ---------------------------------------------------------------------------
 
 
+async def ainput(prompt: str) -> str:
+    """input() off the event loop, so asyncio debug mode only flags real blocking."""
+    return await asyncio.to_thread(input, prompt)
+
+
+async def agetpass(prompt: str) -> str:
+    """getpass() off the event loop."""
+    return await asyncio.to_thread(getpass.getpass, prompt)
+
+
 async def get_client(session: aiohttp.ClientSession) -> GarminClient:
     auth = GarminAuth()
 
@@ -57,14 +67,14 @@ async def get_client(session: aiohttp.ClientSession) -> GarminClient:
         password = PASSWORD
 
         if email == "your-email@example.com":
-            email = input("Garmin Email: ").strip()
+            email = await ainput("Garmin Email: ").strip()
         if password == "your-password":
-            password = getpass.getpass("Garmin Password: ")
+            password = await agetpass("Garmin Password: ")
 
         try:
             await auth.login(email, password)
         except GarminMFARequired:
-            mfa_code = input("MFA code: ").strip()
+            mfa_code = await ainput("MFA code: ").strip()
             await auth.complete_mfa(mfa_code)
         except Exception as e:
             print(f"Login failed: {e}")
@@ -84,11 +94,11 @@ async def get_client(session: aiohttp.ClientSession) -> GarminClient:
 async def do_nutrition(client: GarminClient) -> None:
     """Log a Quick Add nutrition entry (Connect+ required)."""
     print("\n--- Nutrition Quick Add ---")
-    calories = float(input("Calories [100]: ").strip() or "100")
-    carbs = float(input("Carbs g  [10]:  ").strip() or "10")
-    protein = float(input("Protein g [5]: ").strip() or "5")
-    fat = float(input("Fat g    [3]:  ").strip() or "3")
-    name = input("Name     [HA Test]: ").strip() or "HA Test"
+    calories = float(await ainput("Calories [100]: ").strip() or "100")
+    carbs = float(await ainput("Carbs g  [10]:  ").strip() or "10")
+    protein = float(await ainput("Protein g [5]: ").strip() or "5")
+    fat = float(await ainput("Fat g    [3]:  ").strip() or "3")
+    name = await ainput("Name     [HA Test]: ").strip() or "HA Test"
 
     result = await client.add_nutrition_log(
         calories=calories,
@@ -104,7 +114,7 @@ async def do_nutrition(client: GarminClient) -> None:
 async def do_hydration(client: GarminClient) -> None:
     """Log hydration intake."""
     print("\n--- Hydration Log ---")
-    ml = float(input("Amount in mL [250]: ").strip() or "250")
+    ml = float(await ainput("Amount in mL [250]: ").strip() or "250")
 
     result = await client.set_hydration(value_in_ml=ml)
     _print_result(result)
@@ -113,10 +123,10 @@ async def do_hydration(client: GarminClient) -> None:
 async def do_blood_pressure(client: GarminClient) -> None:
     """Log a blood pressure measurement."""
     print("\n--- Blood Pressure ---")
-    systolic = int(input("Systolic  [120]: ").strip() or "120")
-    diastolic = int(input("Diastolic  [80]: ").strip() or "80")
-    pulse = int(input("Pulse      [70]: ").strip() or "70")
-    notes = input("Notes      []:   ").strip()
+    systolic = int(await ainput("Systolic  [120]: ").strip() or "120")
+    diastolic = int(await ainput("Diastolic  [80]: ").strip() or "80")
+    pulse = int(await ainput("Pulse      [70]: ").strip() or "70")
+    notes = await ainput("Notes      []:   ").strip()
 
     result = await client.set_blood_pressure(
         systolic=systolic,
@@ -130,8 +140,8 @@ async def do_blood_pressure(client: GarminClient) -> None:
 async def do_body_composition(client: GarminClient) -> None:
     """Log a body weight / composition measurement via FIT upload."""
     print("\n--- Body Composition ---")
-    weight = float(input("Weight kg    [75.0]: ").strip() or "75.0")
-    percent_fat_s = input("Body fat %   [skip]: ").strip()
+    weight = float(await ainput("Weight kg    [75.0]: ").strip() or "75.0")
+    percent_fat_s = await ainput("Body fat %   [skip]: ").strip()
     percent_fat = float(percent_fat_s) if percent_fat_s else None
 
     result = await client.add_body_composition(
@@ -144,13 +154,13 @@ async def do_body_composition(client: GarminClient) -> None:
 async def do_create_activity(client: GarminClient) -> None:
     """Create a manual activity entry."""
     print("\n--- Create Manual Activity ---")
-    name = input("Activity name  [Test run]:  ").strip() or "Test run"
-    atype = input("Type key       [running]:   ").strip() or "running"
-    start = input("Start datetime [now]:        ").strip()
+    name = await ainput("Activity name  [Test run]:  ").strip() or "Test run"
+    atype = await ainput("Type key       [running]:   ").strip() or "running"
+    start = await ainput("Start datetime [now]:        ").strip()
     if not start:
         start = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000")
-    duration = int(input("Duration min   [30]:        ").strip() or "30")
-    distance = float(input("Distance km    [5.0]:       ").strip() or "5.0")
+    duration = int(await ainput("Duration min   [30]:        ").strip() or "30")
+    distance = float(await ainput("Distance km    [5.0]:       ").strip() or "5.0")
 
     result = await client.create_activity(
         activity_name=name,
@@ -165,7 +175,7 @@ async def do_create_activity(client: GarminClient) -> None:
 async def do_upload_activity(client: GarminClient) -> None:
     """Upload a FIT / GPX / TCX activity file."""
     print("\n--- Upload Activity File ---")
-    file_path = input("File path (FIT/GPX/TCX): ").strip()
+    file_path = await ainput("File path (FIT/GPX/TCX): ").strip()
     if not file_path:
         print("No path given, skipping.")
         return
@@ -218,7 +228,7 @@ async def run(session: aiohttp.ClientSession) -> None:
             print(f"  {i}. {label}")
         print("  0. Exit")
 
-        choice = input("\n> ").strip()
+        choice = await ainput("\n> ").strip()
         if choice == "0":
             break
 

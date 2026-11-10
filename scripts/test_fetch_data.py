@@ -35,6 +35,16 @@ PASSWORD = os.getenv("GARMIN_PASSWORD", "your-password")
 TOKEN_FILE = Path(__file__).resolve().parent.parent / ".garmin_tokens.json"
 
 
+async def ainput(prompt: str) -> str:
+    """input() off the event loop, so asyncio debug mode only flags real blocking."""
+    return await asyncio.to_thread(input, prompt)
+
+
+async def agetpass(prompt: str) -> str:
+    """getpass() off the event loop."""
+    return await asyncio.to_thread(getpass.getpass, prompt)
+
+
 def json_serial(obj):
     """JSON serializer for objects not serializable by default."""
     if isinstance(obj, (datetime, date)):
@@ -73,9 +83,9 @@ async def interactive_login(auth: GarminAuth) -> None:
     password = PASSWORD
 
     if email == "your-email@example.com":
-        email = input("Garmin Email: ").strip()
+        email = await ainput("Garmin Email: ").strip()
     if password == "your-password":
-        password = getpass.getpass("Garmin Password: ")
+        password = await agetpass("Garmin Password: ")
 
     print(f"Logging in as {email}...")
 
@@ -83,7 +93,7 @@ async def interactive_login(auth: GarminAuth) -> None:
         await auth.login(email, password)
     except GarminMFARequired:
         print("MFA required!")
-        mfa_code = input("Enter MFA code: ").strip()
+        mfa_code = await ainput("Enter MFA code: ").strip()
         await auth.complete_mfa(mfa_code)
 
     print("Login successful!")
