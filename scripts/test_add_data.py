@@ -47,8 +47,8 @@ MENU = [
 
 
 async def ainput(prompt: str) -> str:
-    """input() off the event loop, so asyncio debug mode only flags real blocking."""
-    return await asyncio.to_thread(input, prompt)
+    """input() off the event loop (stripped), so asyncio debug mode only flags real blocking."""
+    return (await asyncio.to_thread(input, prompt)).strip()
 
 
 async def agetpass(prompt: str) -> str:
@@ -67,14 +67,14 @@ async def get_client(session: aiohttp.ClientSession) -> GarminClient:
         password = PASSWORD
 
         if email == "your-email@example.com":
-            email = await ainput("Garmin Email: ").strip()
+            email = await ainput("Garmin Email: ")
         if password == "your-password":
             password = await agetpass("Garmin Password: ")
 
         try:
             await auth.login(email, password)
         except GarminMFARequired:
-            mfa_code = await ainput("MFA code: ").strip()
+            mfa_code = await ainput("MFA code: ")
             await auth.complete_mfa(mfa_code)
         except Exception as e:
             print(f"Login failed: {e}")
@@ -94,11 +94,11 @@ async def get_client(session: aiohttp.ClientSession) -> GarminClient:
 async def do_nutrition(client: GarminClient) -> None:
     """Log a Quick Add nutrition entry (Connect+ required)."""
     print("\n--- Nutrition Quick Add ---")
-    calories = float(await ainput("Calories [100]: ").strip() or "100")
-    carbs = float(await ainput("Carbs g  [10]:  ").strip() or "10")
-    protein = float(await ainput("Protein g [5]: ").strip() or "5")
-    fat = float(await ainput("Fat g    [3]:  ").strip() or "3")
-    name = await ainput("Name     [HA Test]: ").strip() or "HA Test"
+    calories = float(await ainput("Calories [100]: ") or "100")
+    carbs = float(await ainput("Carbs g  [10]:  ") or "10")
+    protein = float(await ainput("Protein g [5]: ") or "5")
+    fat = float(await ainput("Fat g    [3]:  ") or "3")
+    name = await ainput("Name     [HA Test]: ") or "HA Test"
 
     result = await client.add_nutrition_log(
         calories=calories,
@@ -114,7 +114,7 @@ async def do_nutrition(client: GarminClient) -> None:
 async def do_hydration(client: GarminClient) -> None:
     """Log hydration intake."""
     print("\n--- Hydration Log ---")
-    ml = float(await ainput("Amount in mL [250]: ").strip() or "250")
+    ml = float(await ainput("Amount in mL [250]: ") or "250")
 
     result = await client.set_hydration(value_in_ml=ml)
     _print_result(result)
@@ -123,10 +123,10 @@ async def do_hydration(client: GarminClient) -> None:
 async def do_blood_pressure(client: GarminClient) -> None:
     """Log a blood pressure measurement."""
     print("\n--- Blood Pressure ---")
-    systolic = int(await ainput("Systolic  [120]: ").strip() or "120")
-    diastolic = int(await ainput("Diastolic  [80]: ").strip() or "80")
-    pulse = int(await ainput("Pulse      [70]: ").strip() or "70")
-    notes = await ainput("Notes      []:   ").strip()
+    systolic = int(await ainput("Systolic  [120]: ") or "120")
+    diastolic = int(await ainput("Diastolic  [80]: ") or "80")
+    pulse = int(await ainput("Pulse      [70]: ") or "70")
+    notes = await ainput("Notes      []:   ")
 
     result = await client.set_blood_pressure(
         systolic=systolic,
@@ -140,8 +140,8 @@ async def do_blood_pressure(client: GarminClient) -> None:
 async def do_body_composition(client: GarminClient) -> None:
     """Log a body weight / composition measurement via FIT upload."""
     print("\n--- Body Composition ---")
-    weight = float(await ainput("Weight kg    [75.0]: ").strip() or "75.0")
-    percent_fat_s = await ainput("Body fat %   [skip]: ").strip()
+    weight = float(await ainput("Weight kg    [75.0]: ") or "75.0")
+    percent_fat_s = await ainput("Body fat %   [skip]: ")
     percent_fat = float(percent_fat_s) if percent_fat_s else None
 
     result = await client.add_body_composition(
@@ -154,13 +154,13 @@ async def do_body_composition(client: GarminClient) -> None:
 async def do_create_activity(client: GarminClient) -> None:
     """Create a manual activity entry."""
     print("\n--- Create Manual Activity ---")
-    name = await ainput("Activity name  [Test run]:  ").strip() or "Test run"
-    atype = await ainput("Type key       [running]:   ").strip() or "running"
-    start = await ainput("Start datetime [now]:        ").strip()
+    name = await ainput("Activity name  [Test run]:  ") or "Test run"
+    atype = await ainput("Type key       [running]:   ") or "running"
+    start = await ainput("Start datetime [now]:        ")
     if not start:
         start = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.000")
-    duration = int(await ainput("Duration min   [30]:        ").strip() or "30")
-    distance = float(await ainput("Distance km    [5.0]:       ").strip() or "5.0")
+    duration = int(await ainput("Duration min   [30]:        ") or "30")
+    distance = float(await ainput("Distance km    [5.0]:       ") or "5.0")
 
     result = await client.create_activity(
         activity_name=name,
@@ -228,7 +228,7 @@ async def run(session: aiohttp.ClientSession) -> None:
             print(f"  {i}. {label}")
         print("  0. Exit")
 
-        choice = await ainput("\n> ").strip()
+        choice = await ainput("\n> ")
         if choice == "0":
             break
 

@@ -36,8 +36,8 @@ TOKEN_FILE = Path(__file__).resolve().parent.parent / ".garmin_tokens.json"
 
 
 async def ainput(prompt: str) -> str:
-    """input() off the event loop, so asyncio debug mode only flags real blocking."""
-    return await asyncio.to_thread(input, prompt)
+    """input() off the event loop (stripped), so asyncio debug mode only flags real blocking."""
+    return (await asyncio.to_thread(input, prompt)).strip()
 
 
 async def agetpass(prompt: str) -> str:
@@ -83,7 +83,7 @@ async def interactive_login(auth: GarminAuth) -> None:
     password = PASSWORD
 
     if email == "your-email@example.com":
-        email = await ainput("Garmin Email: ").strip()
+        email = await ainput("Garmin Email: ")
     if password == "your-password":
         password = await agetpass("Garmin Password: ")
 
@@ -93,7 +93,7 @@ async def interactive_login(auth: GarminAuth) -> None:
         await auth.login(email, password)
     except GarminMFARequired:
         print("MFA required!")
-        mfa_code = await ainput("Enter MFA code: ").strip()
+        mfa_code = await ainput("Enter MFA code: ")
         await auth.complete_mfa(mfa_code)
 
     print("Login successful!")
