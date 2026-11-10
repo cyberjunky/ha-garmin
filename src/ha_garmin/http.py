@@ -247,10 +247,10 @@ class LoginSession:
                 timeout=timeout,
             )
         if self._cffi is None:
-            self._cffi = AsyncSession(impersonate=self._impersonate)  # type: ignore[arg-type]
+            self._cffi = AsyncSession(impersonate=self._impersonate)  # type: ignore[arg-type,unused-ignore]  # stricter stubs in older curl_cffi
         try:
             r = await self._cffi.request(
-                method,  # type: ignore[arg-type]
+                method,  # type: ignore[arg-type,unused-ignore]
                 url,
                 params=_query(params),
                 headers=dict(headers) if headers else None,
