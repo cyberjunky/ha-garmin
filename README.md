@@ -39,6 +39,17 @@ ha-garmin is fully async: every network call is awaited on the event loop.
 - **Data API:** aiohttp. Pass your own `aiohttp.ClientSession` (Home Assistant passes its own); without one the client creates a session, which you release with `await client.close()` or `async with`.
 - **Login, MFA and token refresh:** `curl_cffi`'s asyncio `AsyncSession` with TLS impersonation. Garmin's web application firewall only lets browser- or app-like TLS fingerprints through to SSO, which aiohttp cannot produce, so these keep their own short-lived sessions. That also keeps SSO cookies out of a shared cookie jar.
 
+### Upgrading from 0.1.x
+
+0.2.0 is fully async, which changes the API:
+
+- `GarminAuth.login()`, `complete_mfa()` and `logout()` are coroutines: `await` them instead of calling them (or running them in an executor).
+- `GarminClient(...)` takes an optional `session=` (`aiohttp.ClientSession`). Without it, close the client with `await client.close()` or use `async with GarminClient(...) as client:`.
+- `GarminAuth.cancel_mfa()` (new) abandons a pending MFA login and closes its session without deleting the token file, unlike `logout()`.
+- `load_session()` no longer refreshes an expiring token; the client refreshes it before its next request. `load_session()` / `save_session()` are still synchronous file I/O.
+- `requests` is no longer a dependency; `aiohttp` is.
+- Token files and stored DI tokens from 0.1.x keep working.
+
 ### Standalone script
 
 ```python
@@ -113,7 +124,8 @@ The scripts in `scripts/` run the library against a real account, without Home A
 ```bash
 make fetch         # fetch all data and dump it to .garmin_data_dump.json
 make fetch-debug   # same, in asyncio debug mode: logs anything that blocks the event loop >100 ms
-make add-data      # interactive write actions (nutrition, hydration, blood pressure, uploads)
+make add-data      # interactive write actions (nutrition, hydration, blood pressure, uploads, downloads)
+make login-strategies  # try each login strategy on its own (no fallback) and report which work
 ```
 
 ## Coordinator Fetch Methods
