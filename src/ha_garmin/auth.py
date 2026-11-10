@@ -388,6 +388,58 @@ class GarminAuth:
     #  LOGIN — cascading strategy chain                                    #
     # ------------------------------------------------------------------ #
 
+    def _login_strategies(
+        self, email: str, password: str
+    ) -> list[tuple[str, Callable[[], Awaitable[AuthResult]]]]:
+        """The login strategies in the order login() tries them.
+
+        CN SSO does not support the mobile API endpoint, so web-based
+        strategies run first there. For .com accounts the mobile strategies
+        stay at the front because they bypass Cloudflare more reliably.
+        """
+        mobile: list[tuple[str, Callable[[], Awaitable[AuthResult]]]] = [
+            ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
+            ("mobile+aiohttp", lambda: self._mobile_login_requests(email, password)),
+        ]
+        web: list[tuple[str, Callable[[], Awaitable[AuthResult]]]] = [
+            ("widget+cffi", lambda: self._widget_web_login(email, password)),
+            ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
+            (
+                "portal+aiohttp",
+                lambda: self._portal_web_login_requests(email, password),
+            ),
+        ]
+        return web + mobile if self._is_cn else mobile + web
+
+    async def login_with_strategy(
+        self, name: str, email: str, password: str
+    ) -> AuthResult:
+        """Log in with one named strategy only, without falling back.
+
+        For diagnosing which strategies work from a given network or account
+        (see scripts/test_login_strategies.py); normal callers use login().
+        Raises GarminMFARequired like login(); finish with complete_mfa().
+        """
+        if self._mfa_pending:
+            raise GarminAuthError(
+                "MFA login already in progress; complete it with complete_mfa() "
+                "or call cancel_mfa() first"
+            )
+        strategies = dict(self._login_strategies(email, password))
+        if name not in strategies:
+            raise ValueError(
+                f"Unknown login strategy {name!r}; choose from {', '.join(strategies)}"
+            )
+        await self._clear_auth_state()
+        result = await strategies[name]()
+        if not await self._verify_token():
+            message = self._token_rejected_message(
+                f"{name}: token rejected by API tier"
+            )
+            await self._clear_auth_state()
+            raise GarminAPIError(message)
+        return result
+
     async def login(self, email: str, password: str) -> AuthResult:
         """Login using a cascading strategy chain.
 
@@ -405,37 +457,7 @@ class GarminAuth:
         # a previous login/session-load must not leave is_authenticated True
         # when every strategy fails.
         await self._clear_auth_state()
-        # CN SSO does not support the mobile API endpoint, so web-based
-        # strategies must run first.  For .com accounts the mobile strategies
-        # stay at the front because they bypass Cloudflare more reliably.
-        if self._is_cn:
-            strategies: list[tuple[str, Any]] = [
-                ("widget+cffi", lambda: self._widget_web_login(email, password)),
-                ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
-                (
-                    "portal+requests",
-                    lambda: self._portal_web_login_requests(email, password),
-                ),
-                ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
-                (
-                    "mobile+requests",
-                    lambda: self._mobile_login_requests(email, password),
-                ),
-            ]
-        else:
-            strategies = [
-                ("mobile+cffi", lambda: self._mobile_login_cffi(email, password)),
-                (
-                    "mobile+requests",
-                    lambda: self._mobile_login_requests(email, password),
-                ),
-                ("widget+cffi", lambda: self._widget_web_login(email, password)),
-                ("portal+cffi", lambda: self._portal_web_login_cffi(email, password)),
-                (
-                    "portal+requests",
-                    lambda: self._portal_web_login_requests(email, password),
-                ),
-            ]
+        strategies = self._login_strategies(email, password)
 
         last_err: Exception | None = None
         rate_limited_count = 0
@@ -544,7 +566,7 @@ class GarminAuth:
         raise GarminAPIError("mobile+cffi: no impersonations available")
 
     # ------------------------------------------------------------------ #
-    #  STRATEGY 2 — Mobile iOS + plain requests                           #
+    #  STRATEGY 2 — Mobile iOS + plain aiohttp                            #
     # ------------------------------------------------------------------ #
 
     async def _mobile_login_requests(self, email: str, password: str) -> AuthResult:
@@ -946,7 +968,7 @@ class GarminAuth:
         raise GarminAPIError("portal+cffi: no impersonations available")
 
     # ------------------------------------------------------------------ #
-    #  STRATEGY 5 — Portal web + plain requests                          #
+    #  STRATEGY 5 — Portal web + plain aiohttp                           #
     # ------------------------------------------------------------------ #
 
     async def _portal_web_login_requests(self, email: str, password: str) -> AuthResult:

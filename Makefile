@@ -1,4 +1,4 @@
-.PHONY: install format lint test build publish clean fetch fetch-debug add-data
+.PHONY: install format lint test build publish clean fetch fetch-debug add-data login-strategies
 
 # Python executable from venv
 PYTHON := .venv/bin/python
@@ -61,6 +61,11 @@ fetch-debug:
 add-data:
 	$(PYTHON) scripts/test_add_data.py
 
+# Try every login strategy on its own (no fallback) and report which work.
+# Real logins: expect an MFA code per strategy; 60s pause between them.
+login-strategies:
+	$(PYTHON) scripts/test_login_strategies.py
+
 clean:
 	rm -rf build/
 	rm -rf dist/
@@ -90,5 +95,6 @@ help:
 	@echo "  fetch         - Fetch all data from a real account (no Home Assistant)"
 	@echo "  fetch-debug   - fetch, reporting anything that blocks the event loop"
 	@echo "  add-data      - Interactive write actions against a real account"
+	@echo "  login-strategies - Try each login strategy on its own and report results"
 	@echo "  clean         - Remove build artifacts"
 	@echo "  all           - Run format, lint, and test"

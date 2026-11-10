@@ -1071,3 +1071,56 @@ async def test_cancel_mfa_keeps_stored_tokens(tmp_path: Path) -> None:
     assert auth._mfa_pending is False
     assert token_file.exists()
     assert auth.di_token == "old_token"
+
+
+# ── Single-strategy login ─────────────────────────────────────────────────────
+
+
+def test_login_strategy_order() -> None:
+    """Mobile strategies lead for .com accounts; web strategies lead for China."""
+    names = [n for n, _ in GarminAuth()._login_strategies("e", "p")]
+    assert names == [
+        "mobile+cffi",
+        "mobile+aiohttp",
+        "widget+cffi",
+        "portal+cffi",
+        "portal+aiohttp",
+    ]
+    cn = [n for n, _ in GarminAuth(is_cn=True)._login_strategies("e", "p")]
+    assert cn[:3] == ["widget+cffi", "portal+cffi", "portal+aiohttp"]
+
+
+async def test_login_with_strategy_runs_only_that_strategy() -> None:
+    """No fallback: only the named strategy runs, and its failure is raised."""
+    auth = GarminAuth()
+    with (
+        patch.object(
+            auth, "_widget_web_login", AsyncMock(side_effect=GarminAPIError("blocked"))
+        ),
+        patch.object(auth, "_mobile_login_cffi", AsyncMock()) as mobile,
+        pytest.raises(GarminAPIError, match="blocked"),
+    ):
+        await auth.login_with_strategy("widget+cffi", "e", "p")
+    mobile.assert_not_awaited()
+
+
+async def test_login_with_strategy_verifies_the_token() -> None:
+    """A token the API tier rejects is an error, and no token is kept."""
+    auth = GarminAuth()
+
+    async def fake_login(email: str, password: str):
+        auth.di_token = "tok"
+
+    with (
+        patch.object(auth, "_portal_web_login_cffi", fake_login),
+        patch.object(auth, "_verify_token", AsyncMock(return_value=False)),
+        pytest.raises(GarminAPIError, match="portal\\+cffi: token rejected"),
+    ):
+        await auth.login_with_strategy("portal+cffi", "e", "p")
+    assert not auth.is_authenticated
+
+
+async def test_login_with_unknown_strategy() -> None:
+    """An unknown strategy name lists the valid ones."""
+    with pytest.raises(ValueError, match="mobile\\+cffi"):
+        await GarminAuth().login_with_strategy("carrier-pigeon", "e", "p")
