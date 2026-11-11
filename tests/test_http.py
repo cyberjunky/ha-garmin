@@ -50,6 +50,7 @@ async def server():
                 "method": request.method,
                 "path": request.path,
                 "query": dict(request.query),
+                "query_items": list(request.query.items()),
                 "headers": dict(request.headers),
                 "body": body,
                 "content_type": request.content_type,
@@ -100,6 +101,29 @@ async def test_api_transport_encodes_params_like_requests(server) -> None:
         "includeAll": "True",
         "n": "3",
     }
+
+
+async def test_api_transport_repeats_list_params(server) -> None:
+    """A list value repeats the key per item, as requests did, not its repr."""
+    transport = ApiTransport()
+    await transport.request(
+        "GET",
+        str(server.make_url("/q")),
+        params={
+            "start": 0,
+            "gearStatuses": ["ACTIVE", "RETIRED"],
+            "ids": (1, None, 2),
+            "empty": [],
+        },
+    )
+    await transport.close()
+    assert server.received[0]["query_items"] == [
+        ("start", "0"),
+        ("gearStatuses", "ACTIVE"),
+        ("gearStatuses", "RETIRED"),
+        ("ids", "1"),
+        ("ids", "2"),
+    ]
 
 
 async def test_api_transport_sends_json_and_files(server) -> None:
@@ -225,7 +249,7 @@ async def test_login_session_with_impersonation_uses_curl_cffi() -> None:
     assert resp.text == "ok"
     _, kwargs = fake.request.call_args
     assert kwargs["data"] == {"a": "b"}
-    assert kwargs["params"] == {}
+    assert kwargs["params"] == []
     fake.close.assert_awaited_once()
 
 
