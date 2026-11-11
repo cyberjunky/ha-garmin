@@ -107,15 +107,22 @@ def transport_error(err: BaseException, url: str) -> GarminConnectError:
     return GarminAPIError(f"Request failed: {err}")
 
 
-def _query(params: Mapping[str, Any] | None) -> dict[str, str] | None:
+def _query(params: Mapping[str, Any] | None) -> list[tuple[str, str]] | None:
     """Encode query params the way requests does.
 
     aiohttp rejects None and bool values; requests drops None and sends
-    bools as "True"/"False".
+    bools as "True"/"False". A list or tuple value repeats the key once per
+    item (``gearStatuses=ACTIVE&gearStatuses=RETIRED``), as requests did;
+    ``str()`` on the list would send its Python repr, which Garmin answers
+    with a 404.
     """
     if params is None:
         return None
-    return {k: str(v) for k, v in params.items() if v is not None}
+    query: list[tuple[str, str]] = []
+    for key, value in params.items():
+        items = value if isinstance(value, (list, tuple)) else (value,)
+        query.extend((key, str(item)) for item in items if item is not None)
+    return query
 
 
 def _form(files: Files) -> aiohttp.FormData:
