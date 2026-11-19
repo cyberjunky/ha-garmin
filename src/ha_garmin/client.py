@@ -331,6 +331,8 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "maxRunningCadenceInStepsPerMinute",
     "averageCadence",
     "maxCadence",
+    "averageBikeCadence",
+    "maxBikeCadence",
     # Power
     "avgPower",
     "maxPower",
@@ -388,6 +390,10 @@ EBIKE_ACTIVITY_KEYS = (
     "eBikeBatteryRemaining",
     "eBikeBatteryUsage",
     "eBikeMaxAssistModes",
+)
+CYCLING_SUMMARY_KEYS = (
+    "averageBikeCadence",
+    "maxBikeCadence",
 )
 
 # Device registration payload is ~150 keys of mostly capability flags;
@@ -1752,7 +1758,7 @@ class GarminClient:
             source = {**(summary.get("summaryDTO") or {}), **summary}
             fields = {
                 key: source[key]
-                for key in EBIKE_ACTIVITY_KEYS
+                for key in (*EBIKE_ACTIVITY_KEYS, *CYCLING_SUMMARY_KEYS)
                 if source.get(key) is not None
             }
             if source.get("connectIQMeasurements"):
@@ -3411,7 +3417,7 @@ class GarminClient:
                         {
                             k: v
                             for k, v in summary_fields.items()
-                            if k in EBIKE_ACTIVITY_KEYS
+                            if k in (*EBIKE_ACTIVITY_KEYS, *CYCLING_SUMMARY_KEYS)
                         }
                     )
                 measurements = summary_fields.get("connectIQMeasurements")
