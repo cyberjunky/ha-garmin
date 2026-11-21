@@ -2520,6 +2520,10 @@ class TestGarminClient:
             ("download_activity", (-5, "fit")),
             ("get_device_solar_data", ("device",)),
             ("get_device_settings", (0,)),
+            ("add_dogs_to_activity", (0, [1001])),
+            ("add_dogs_to_activity", (12345, [])),
+            ("set_activity_dogs", (12345, [-1])),
+            ("remove_dogs_from_activity", (12345, [])),
         ],
     )
     async def test_integer_path_ids_rejected(self, method, args):
@@ -3019,6 +3023,61 @@ class TestWorkoutWrites:
             await call(client)
         for mock in (client._post_request, client._put_request, client._delete_request):
             mock.assert_not_awaited()
+
+
+class TestActivityDogs:
+    """Dogs on an activity are written with a partial metadataDTO PUT."""
+
+    @staticmethod
+    def _client(existing: dict | None = None) -> GarminClient:
+        client = GarminClient(_make_auth())
+        client._request = AsyncMock(
+            return_value={"activityId": 12345, "metadataDTO": existing or {}}
+        )
+        client._put_request = AsyncMock(return_value={})
+        return client
+
+    async def test_set_activity_dogs_sends_partial_body(self):
+        from ha_garmin.const import ACTIVITY_DETAILS_URL
+
+        client = self._client()
+        await client.set_activity_dogs(12345, [1001, 1002])
+        client._put_request.assert_awaited_once_with(
+            f"{ACTIVITY_DETAILS_URL}/12345",
+            {
+                "activityId": 12345,
+                "metadataDTO": {"hasDog": True, "dogProfileIds": [1001, 1002]},
+            },
+        )
+
+    async def test_add_dogs_merges_with_existing(self):
+        client = self._client({"hasDog": True, "dogProfileIds": [1002]})
+        assert await client.add_dogs_to_activity(12345, [1001]) == [1002, 1001]
+        body = client._put_request.call_args.args[1]
+        assert body["metadataDTO"] == {"hasDog": True, "dogProfileIds": [1002, 1001]}
+
+    async def test_add_dogs_treats_absent_keys_as_none(self):
+        client = self._client()
+        assert await client.add_dogs_to_activity(12345, [1001]) == [1001]
+        body = client._put_request.call_args.args[1]
+        assert body["metadataDTO"] == {"hasDog": True, "dogProfileIds": [1001]}
+
+    async def test_add_dogs_noop_when_present(self):
+        client = self._client({"hasDog": True, "dogProfileIds": [1001]})
+        assert await client.add_dogs_to_activity(12345, [1001]) == [1001]
+        client._put_request.assert_not_called()
+
+    async def test_remove_last_dog_clears_has_dog(self):
+        client = self._client({"hasDog": True, "dogProfileIds": [1001]})
+        assert await client.remove_dogs_from_activity(12345, [1001]) == []
+        body = client._put_request.call_args.args[1]
+        assert body["metadataDTO"] == {"hasDog": False, "dogProfileIds": []}
+
+    async def test_remove_keeps_other_dogs(self):
+        client = self._client({"hasDog": True, "dogProfileIds": [1001, 1002]})
+        assert await client.remove_dogs_from_activity(12345, [1001]) == [1002]
+        body = client._put_request.call_args.args[1]
+        assert body["metadataDTO"] == {"hasDog": True, "dogProfileIds": [1002]}
 
 
 class TestWebAppParity:

@@ -158,6 +158,9 @@ Methods for logging data back to Garmin Connect, suitable for Home Assistant ser
 | `upload_activity(file_path)` | Upload a FIT / GPX / TCX file |
 | `set_active_gear(activity_type, setting, gear_uuid)` | Set default gear for an activity type |
 | `add_gear_to_activity(gear_uuid, activity_id)` | Associate gear with an activity |
+| `set_activity_dogs(activity_id, dog_ids)` | Set the exact dogs on an activity (empty list removes all); sends only the dog fields |
+| `add_dogs_to_activity(activity_id, dog_ids)` | Add dogs to an activity, keeping existing ones; returns the resulting IDs |
+| `remove_dogs_from_activity(activity_id, dog_ids)` | Remove dogs from an activity, keeping the others; returns the resulting IDs |
 | `create_workout(workout)` | Create a workout from Garmin workout JSON; returns it with `workoutId` |
 | `update_workout(workout_id, workout)` | Replace a workout in place (keeps its id and schedules) |
 | `delete_workout(workout_id)` | Delete a workout from the library |

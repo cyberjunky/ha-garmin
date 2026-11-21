@@ -228,6 +228,16 @@ def _validate_positive_int(value: Any, name: str) -> int:
     return validated
 
 
+def _validate_dog_ids(dog_ids: Any, *, allow_empty: bool = False) -> list[int]:
+    """Validate a list of dog profile IDs and return it as a list of ints."""
+    if not isinstance(dog_ids, list | tuple) or (not dog_ids and not allow_empty):
+        raise ValueError(
+            f"dog_ids must be a positive integer list with at least one id, "
+            f"got {dog_ids!r}"
+        )
+    return [_validate_positive_int(dog_id, "dog_ids") for dog_id in dog_ids]
+
+
 def _validate_uuid(value: str, name: str) -> str:
     """Validate a value is a UUID-like string suitable for a URL path segment."""
     if not isinstance(value, str):
@@ -3047,6 +3057,79 @@ class GarminClient:
         activity_id = _validate_positive_int(activity_id, "activity_id")
         url = f"{GEAR_LINK_URL}/{gear_uuid}/activity/{activity_id}"
         return await self._put_request(url)
+
+    async def set_activity_dogs(
+        self, activity_id: int, dog_ids: list[int]
+    ) -> dict[str, Any]:
+        """Set the exact list of dogs attached to an activity.
+
+        Sends only the dog fields of metadataDTO, so nothing else on the
+        activity changes. An empty list removes all dogs.
+
+        Args:
+            activity_id: ID of the activity
+            dog_ids: Dog profile IDs (from get_dogs)
+        """
+        activity_id = _validate_positive_int(activity_id, "activity_id")
+        ids = _validate_dog_ids(dog_ids, allow_empty=True)
+        url = f"{ACTIVITY_DETAILS_URL}/{activity_id}"
+        return await self._put_request(
+            url,
+            {
+                "activityId": activity_id,
+                "metadataDTO": {"hasDog": bool(ids), "dogProfileIds": ids},
+            },
+        )
+
+    async def _get_activity_dog_ids(self, activity_id: int) -> list[int]:
+        """Return the dog profile IDs currently on an activity."""
+        activity = await self.get_activity(activity_id)
+        metadata = activity.get("metadataDTO") or {}
+        return list(metadata.get("dogProfileIds") or [])
+
+    async def add_dogs_to_activity(
+        self, activity_id: int, dog_ids: list[int]
+    ) -> list[int]:
+        """Attach dogs to an activity, keeping the ones already there.
+
+        Writes only when the list changes.
+
+        Args:
+            activity_id: ID of the activity
+            dog_ids: Dog profile IDs to add (from get_dogs)
+
+        Returns:
+            The dog profile IDs on the activity afterwards
+        """
+        activity_id = _validate_positive_int(activity_id, "activity_id")
+        ids = _validate_dog_ids(dog_ids)
+        current = await self._get_activity_dog_ids(activity_id)
+        merged = list(dict.fromkeys([*current, *ids]))
+        if merged != current:
+            await self.set_activity_dogs(activity_id, merged)
+        return merged
+
+    async def remove_dogs_from_activity(
+        self, activity_id: int, dog_ids: list[int]
+    ) -> list[int]:
+        """Detach dogs from an activity, keeping the others.
+
+        Writes only when the list changes.
+
+        Args:
+            activity_id: ID of the activity
+            dog_ids: Dog profile IDs to remove
+
+        Returns:
+            The dog profile IDs on the activity afterwards
+        """
+        activity_id = _validate_positive_int(activity_id, "activity_id")
+        ids = _validate_dog_ids(dog_ids)
+        current = await self._get_activity_dog_ids(activity_id)
+        remaining = [dog_id for dog_id in current if dog_id not in ids]
+        if remaining != current:
+            await self.set_activity_dogs(activity_id, remaining)
+        return remaining
 
     async def create_workout(self, workout: dict[str, Any]) -> dict[str, Any]:
         """Create a workout in the workout library.
