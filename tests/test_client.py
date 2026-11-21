@@ -1168,6 +1168,26 @@ class TestGarminClient:
         assert "eBikeBatteryUsage" not in trimmed
         assert "eBikeMaxAssistModes" not in trimmed
 
+    def test_trim_activity_keeps_dog_fields(self):
+        """Test _trim_activity keeps dog fields only when the activity has them."""
+        from ha_garmin.client import _trim_activity
+
+        trimmed = _trim_activity(
+            {
+                "activityId": 1,
+                "activityName": "Walk",
+                "activityType": {"typeKey": "walking"},
+                "hasDog": True,
+                "dogProfileIds": [1001],
+            }
+        )
+        assert trimmed["hasDog"] is True
+        assert trimmed["dogProfileIds"] == [1001]
+
+        bare = _trim_activity({"activityId": 2, "activityType": {"typeKey": "walking"}})
+        assert "hasDog" not in bare
+        assert "dogProfileIds" not in bare
+
     async def test_get_devices(self):
         """Test get_devices returns list."""
         auth = _make_auth()

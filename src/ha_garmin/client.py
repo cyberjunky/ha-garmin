@@ -380,6 +380,9 @@ ACTIVITY_ESSENTIAL_KEYS = {
     "eBikeBatteryRemaining",
     "eBikeBatteryUsage",
     "eBikeMaxAssistModes",
+    # Dogs attached to the activity (absent when it never had one)
+    "hasDog",
+    "dogProfileIds",
 }
 
 # E-bike fields only appear in the per-activity summary endpoint response,
