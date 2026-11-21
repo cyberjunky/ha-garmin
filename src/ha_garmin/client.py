@@ -232,9 +232,9 @@ def _validate_positive_int(value: Any, name: str) -> int:
 def _validate_dog_ids(dog_ids: Any, *, allow_empty: bool = False) -> list[int]:
     """Validate a list of dog profile IDs and return it as a list of ints."""
     if not isinstance(dog_ids, list | tuple) or (not dog_ids and not allow_empty):
+        needs = "" if allow_empty else " with at least one id"
         raise ValueError(
-            f"dog_ids must be a positive integer list with at least one id, "
-            f"got {dog_ids!r}"
+            f"dog_ids must be a positive integer list{needs}, got {dog_ids!r}"
         )
     return [_validate_positive_int(dog_id, "dog_ids") for dog_id in dog_ids]
 
@@ -2084,7 +2084,10 @@ class GarminClient:
                 "exclude_physio": animal.get("excludePhysio"),
             }
             for animal in data
-            if isinstance(animal, dict) and animal.get("animalType") == "DOG"
+            if isinstance(animal, dict)
+            and animal.get("animalType") == "DOG"
+            and isinstance(animal.get("animalProfileId"), int)
+            and not isinstance(animal.get("animalProfileId"), bool)
         ]
 
     async def get_gear_list(self) -> list[dict[str, Any]]:
@@ -3103,8 +3106,15 @@ class GarminClient:
     async def _get_activity_dog_ids(self, activity_id: int) -> list[int]:
         """Return the dog profile IDs currently on an activity."""
         activity = await self.get_activity(activity_id)
-        metadata = activity.get("metadataDTO") or {}
-        return list(metadata.get("dogProfileIds") or [])
+        metadata = activity.get("metadataDTO")
+        if activity.get("activityId") != activity_id or not isinstance(metadata, dict):
+            raise GarminAPIError(f"Activity {activity_id} not found or has no metadata")
+        dog_ids = metadata.get("dogProfileIds")
+        if metadata.get("hasDog") and not isinstance(dog_ids, list):
+            raise GarminAPIError(
+                f"Activity {activity_id} has hasDog set but no dogProfileIds list"
+            )
+        return list(dog_ids or [])
 
     async def add_dogs_to_activity(
         self, activity_id: int, dog_ids: list[int]
@@ -3486,8 +3496,7 @@ class GarminClient:
         API calls: get_activities, get_activity_details,
                    get_activity_hr_in_timezones, get_workouts,
                    get_scheduled_workouts x2 (this + next month),
-                   get_dogs (7 calls),
-                   get_upcoming_events at most once an hour, get_workout for
+                   get_upcoming_events and get_dogs at most once an hour, get_workout for
                    today's and the next scheduled workout at most once an hour
                    each, get_activity once per
                    new activity (e-bike fields, Connect IQ measurements) and
@@ -3634,7 +3643,7 @@ class GarminClient:
         )
         goal_event = _pick_goal_event(upcoming, plan_id)
 
-        dogs = await self._safe_call(self.get_dogs) or []
+        dogs = await self._cached_safe_call("dogs", self.get_dogs) or []
 
         return {
             "lastActivities": trimmed_activities,
