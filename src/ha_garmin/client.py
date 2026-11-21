@@ -22,6 +22,7 @@ from .const import (
     ACTIVITY_DOWNLOAD_URL,
     ACTIVITY_EXPORT_URL,
     ADAPTIVE_TRAINING_PLAN_URL,
+    ANIMAL_URL,
     BADGES_URL,
     BLOOD_PRESSURE_SET_URL,
     BLOOD_PRESSURE_URL,
@@ -2068,6 +2069,24 @@ class GarminClient:
         data = await self._request("GET", BADGES_URL)
         return data if isinstance(data, list) else []
 
+    async def get_dogs(self) -> list[dict[str, Any]]:
+        """Get the dog profiles on the account.
+
+        Garmin's animal service returns no names, only IDs. Each entry is
+        {"id": animalProfileId, "exclude_physio": excludePhysio}.
+        """
+        data = await self._request("GET", ANIMAL_URL)
+        if not isinstance(data, list):
+            return []
+        return [
+            {
+                "id": animal.get("animalProfileId"),
+                "exclude_physio": animal.get("excludePhysio"),
+            }
+            for animal in data
+            if isinstance(animal, dict) and animal.get("animalType") == "DOG"
+        ]
+
     async def get_gear_list(self) -> list[dict[str, Any]]:
         """Get all active and retired gear, with usage totals (gear v2).
 
@@ -3466,7 +3485,8 @@ class GarminClient:
 
         API calls: get_activities, get_activity_details,
                    get_activity_hr_in_timezones, get_workouts,
-                   get_scheduled_workouts x2 (this + next month) (6 calls),
+                   get_scheduled_workouts x2 (this + next month),
+                   get_dogs (7 calls),
                    get_upcoming_events at most once an hour, get_workout for
                    today's and the next scheduled workout at most once an hour
                    each, get_activity once per
@@ -3614,6 +3634,8 @@ class GarminClient:
         )
         goal_event = _pick_goal_event(upcoming, plan_id)
 
+        dogs = await self._safe_call(self.get_dogs) or []
+
         return {
             "lastActivities": trimmed_activities,
             "lastActivity": trimmed_last_activity,
@@ -3624,6 +3646,7 @@ class GarminClient:
             "nextScheduledWorkout": next_workout,
             "trainingPlanGoalEvent": goal_event,
             "upcomingEvents": [_trim_goal_event(e) for e in upcoming],
+            "dogs": dogs,
         }
 
     async def fetch_training_data(

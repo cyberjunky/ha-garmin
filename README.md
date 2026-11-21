@@ -136,7 +136,7 @@ Optimized methods that group related API calls for Home Assistant coordinators:
 | ------ | --------- | ------------- |
 | `fetch_core_data(latest_heart_rate=False)` | 3+ | Steps, distance, calories, HR, stress, sleep, skin temperature change, body battery, SPO2; with `latest_heart_rate=True` also the latest heart rate sample (re-fetched only after a new watch sync) |
 | `fetch_body_data()` | 3 | Weight, BMI, body fat, hydration, fitness age |
-| `fetch_activity_data()` | 7+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts, with steps and targets for today's and the next one), upcoming events and the plan goal event |
+| `fetch_activity_data()` | 8+ | Activities, workouts, HR zones, polylines, training calendar (scheduled workouts, with steps and targets for today's and the next one), upcoming events and the plan goal event, and dog profiles (`dogs`) |
 | `fetch_training_data()` | 8+ | Training readiness, status, VO2 Max (running and cycling), heat/altitude acclimation, HRV, lactate, endurance/hill scores, power-to-weight |
 | `fetch_goals_data(lifetime_totals=True)` | 4–5 | Goals (active/future/history), badges, user level, lifetime totals (at most hourly; `lifetimeTotalsHidden` when the profile hides them, asked again next poll; skip with `lifetime_totals=False`) |
 | `fetch_gear_data()` | 6+ | Gear items with usage totals and notes (gear v2, no per-item stats calls), device alarms, solar intensity (daily avg + gain), devices, last sync, paired sensors |
@@ -216,6 +216,7 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_goals()` | User goals by status |
 | `get_earned_badges()` | Earned badges |
 | `get_lifetime_totals()` | Lifetime distance, steps, calories and active days. Garmin answers 403 unless "Lifetime Totals" is shown in the user's Garmin Connect profile (Account Settings → Public Profile → Show in profile; the profile can stay private) |
+| `get_dogs()` | Dog profiles on the account as `{id, exclude_physio}` (Garmin returns no names); activities carry `hasDog` and `dogProfileIds` |
 | `get_gear_list()` | Active and retired gear with usage totals and notes (gear v2) |
 | `get_gear_details(gear_uuid)` | One piece of gear, including its default activity types (gear v2) |
 | `get_gear_defaults()` | Default gear settings |

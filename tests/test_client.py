@@ -305,6 +305,7 @@ class TestGarminClient:
         ]
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client, "get_workouts", new_callable=AsyncMock
@@ -343,6 +344,78 @@ class TestGarminClient:
         assert data["trainingPlanGoalEvent"]["targetDistanceUnit"] == "kilometer"
         assert data["trainingPlanGoalEvent"]["trainingPlanType"] == "COACH_ATP"
         assert data["trainingPlanGoalEvent"]["projectedRaceTimeDurationSeconds"] == 1829
+
+    async def test_get_dogs_filters_animal_type(self):
+        """get_dogs returns dog profiles only, as id / exclude_physio."""
+        from ha_garmin.const import ANIMAL_URL
+
+        client = GarminClient(_make_auth())
+        animals = [
+            {
+                "animalProfileId": 1001,
+                "animalType": "DOG",
+                "userId": 1,
+                "excludePhysio": False,
+            },
+            {
+                "animalProfileId": 1002,
+                "animalType": "DOG",
+                "userId": 1,
+                "excludePhysio": True,
+            },
+            {
+                "animalProfileId": 1003,
+                "animalType": "CAT",
+                "userId": 1,
+                "excludePhysio": False,
+            },
+        ]
+        with patch.object(
+            client, "_request", new_callable=AsyncMock, return_value=animals
+        ) as mock_request:
+            dogs = await client.get_dogs()
+
+        mock_request.assert_awaited_once_with("GET", ANIMAL_URL)
+        assert dogs == [
+            {"id": 1001, "exclude_physio": False},
+            {"id": 1002, "exclude_physio": True},
+        ]
+
+    async def test_fetch_activity_data_includes_dogs(self):
+        """fetch_activity_data carries the dog profiles under "dogs"."""
+        client = GarminClient(_make_auth())
+        dogs = [{"id": 1001, "exclude_physio": False}]
+        with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=dogs),
+            patch.object(client, "_request", new_callable=AsyncMock, return_value=[]),
+        ):
+            data = await client.fetch_activity_data()
+
+        assert data["dogs"] == dogs
+
+    async def test_fetch_activity_data_survives_dogs_failure(self):
+        """A failing dog lookup yields [] and leaves the rest of the data."""
+        from ha_garmin.const import ACTIVITIES_URL
+
+        client = GarminClient(_make_auth())
+        activity = {"activityId": 1, "activityType": {"typeKey": "walking"}}
+
+        async def fake_request(method, url, params=None):
+            return [activity] if url == ACTIVITIES_URL else []
+
+        with (
+            patch.object(
+                client,
+                "get_dogs",
+                new_callable=AsyncMock,
+                side_effect=GarminAPIError("boom"),
+            ),
+            patch.object(client, "_request", side_effect=fake_request),
+        ):
+            data = await client.fetch_activity_data()
+
+        assert data["dogs"] == []
+        assert [a["activityId"] for a in data["lastActivities"]] == [1]
 
     @staticmethod
     def _calendar_request_router(
@@ -585,6 +658,7 @@ class TestGarminClient:
         }
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client,
@@ -641,6 +715,7 @@ class TestGarminClient:
         ]
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client,
@@ -692,6 +767,7 @@ class TestGarminClient:
         }
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client,
@@ -755,6 +831,7 @@ class TestGarminClient:
         }
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client,
@@ -814,6 +891,7 @@ class TestGarminClient:
         }
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client,
@@ -905,6 +983,7 @@ class TestGarminClient:
         summary = {"activityId": 11, "connectIQMeasurements": _CIQ_MEASUREMENTS}
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client, "get_activity", new_callable=AsyncMock
@@ -975,6 +1054,7 @@ class TestGarminClient:
         }
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client, "get_activity", new_callable=AsyncMock
@@ -1048,6 +1128,7 @@ class TestGarminClient:
         }
 
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(client, "get_activities", new_callable=AsyncMock) as mock_acts,
             patch.object(
                 client,
@@ -3400,6 +3481,7 @@ class TestCalendarDedup:
             "workoutId": 1731319876,
         }
         with (
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
             patch.object(
                 client, "get_activities", new_callable=AsyncMock, return_value=[]
             ),
@@ -3598,6 +3680,7 @@ class TestScheduledWorkoutSteps:
                 client, "get_upcoming_events", new_callable=AsyncMock, return_value=[]
             ),
             patch.object(client, "get_workout", get_workout),
+            patch.object(client, "get_dogs", new_callable=AsyncMock, return_value=[]),
         ):
             data = await client.fetch_activity_data()
         return data, get_workout

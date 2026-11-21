@@ -105,6 +105,7 @@ ACTIVITY_CREATE_URL = f"{GARMIN_CONNECT_API}/activity-service/activity"
 ACTIVITY_DOWNLOAD_URL = f"{GARMIN_CONNECT_API}/download-service/files/activity"
 ACTIVITY_EXPORT_URL = f"{GARMIN_CONNECT_API}/download-service/export"
 GEAR_LINK_URL = f"{GARMIN_CONNECT_API}/gear-service/gear/link"
+ANIMAL_URL = f"{GARMIN_CONNECT_API}/animal-service/animal"
 
 # Default headers for cookie-based API auth
 DEFAULT_HEADERS = {
