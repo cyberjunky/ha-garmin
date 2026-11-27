@@ -244,7 +244,7 @@ The library automatically adds computed fields for convenience:
 - **Training plan goal**: the plan's goal event, else the upcoming (primary) race on your calendar
 - **Skin temperature**: `avgSkinTempDeviationC` is the nightly change from your baseline, not an absolute temperature
 - **Sleep stress**: `sleepStress` is the overnight series as `[{time, value}]` with UTC datetimes; samples Garmin could not measure are dropped
-- **Sanity checks**: a `metabolicAge` that can't be an age in years is returned as `None`
+- **Metabolic age**: Garmin sometimes stores `metabolicAge` as milliseconds (e.g. after a FIT upload); it is converted to years, and a value that still can't be an age is returned as `None`
 
 ## Community
 

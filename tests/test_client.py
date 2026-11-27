@@ -1921,15 +1921,22 @@ class TestGarminClient:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            (2177427894000, None),  # ms timestamp seen from a third-party scale
+            (1640960152000, 52.0),  # 52 years in ms, after a FIT upload
+            (2177427894000, 69.0),  # 69 years in ms, from a third-party scale
+            (1656738615000, 52.5),  # half years survive the conversion
             (38, 38),
+            (38.0, 38.0),
+            (150, 150),
+            (0, None),
+            (-5, None),
+            (10**16, None),  # ms, but not a plausible age either
+            ("52", None),
+            (True, None),
             (None, None),
         ],
     )
-    async def test_get_body_composition_drops_impossible_metabolic_age(
-        self, raw, expected
-    ):
-        """metabolicAge is only passed through when it can be an age in years."""
+    async def test_get_body_composition_metabolic_age_in_years(self, raw, expected):
+        """metabolicAge comes back in years; Garmin's milliseconds are converted."""
         auth = _make_auth()
         client = GarminClient(auth)
 

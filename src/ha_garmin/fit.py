@@ -434,7 +434,7 @@ class FitEncoderWeight(FitEncoder):
         basal_met: int | float | None = None,
         active_met: int | float | None = None,
         physique_rating: int | float | None = None,
-        metabolic_age: int | float | None = None,
+        metabolic_age: int | None = None,
         visceral_fat_rating: int | float | None = None,
         bmi: int | float | None = None,
     ) -> None:
