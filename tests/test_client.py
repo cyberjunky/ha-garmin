@@ -962,7 +962,7 @@ class TestGarminClient:
         assert "eBikeBatteryRemaining" not in data["lastActivity"]
         assert mock_summary.await_count == retry_limit
 
-    async def test_get_ebike_fields_concurrent_calls_do_not_race(self):
+    async def test_summary_fields_concurrent_calls_do_not_race(self):
         """Overlapping callers must not let one clobber the other's result.
 
         Regression test: two callers racing on the same activity_id used to
@@ -990,8 +990,8 @@ class TestGarminClient:
 
         with patch.object(client, "get_activity", side_effect=slow_success):
             results = await asyncio.gather(
-                client._get_ebike_fields(1),
-                client._get_ebike_fields(1),
+                client._get_summary_fields(1),
+                client._get_summary_fields(1),
             )
 
         # Second caller waited for the lock and got the cached result instead

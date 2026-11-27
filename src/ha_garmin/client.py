@@ -37,7 +37,6 @@ from .const import (
     DEVICES_URL,
     ENDURANCE_SCORE_URL,
     FITNESS_AGE_URL,
-    GARMIN_CN_CONNECT_API,
     GARMIN_CONNECT_API,
     GEAR_BASE_URL,
     GEAR_DEFAULTS_URL,
@@ -463,13 +462,6 @@ DATETIME_FIELDS_LOCAL_DROP = {
     "latestSpo2ReadingTimeLocal",
 }
 
-# Local-only fields that have no GMT equivalent - keep as strings for attributes
-# (Sleep timestamps only exist as Local from Garmin API)
-DATETIME_FIELDS_LOCAL_KEEP_STRING = {
-    "sleepStartTimestampLocal",
-    "sleepEndTimestampLocal",
-}
-
 # Known date fields (ISO format, date only) to convert to Python date
 DATE_FIELDS = {
     "badgeEarnedDate",
@@ -540,8 +532,6 @@ def _convert_datetime_fields(data: dict[str, Any]) -> dict[str, Any]:
     if result.get("durationInMilliseconds"):
         with suppress(TypeError):
             result["durationMinutes"] = round(result["durationInMilliseconds"] / 60000)
-
-    # Note: DATETIME_FIELDS_LOCAL_KEEP_STRING are intentionally kept as strings
 
     return result
 
@@ -1233,7 +1223,6 @@ class GarminClient:
         # UTC offset of the Garmin calendar day, learned from daily summaries.
         self._garmin_utc_offset: timedelta | None = None
         self._is_cn = is_cn
-        self._base_url = GARMIN_CN_CONNECT_API if is_cn else GARMIN_CONNECT_API
         self._profile_cache: UserProfile | None = None
         # Slow-changing data fetched at most once per _SLOW_CACHE_SECONDS:
         # key -> (monotonic fetch time, value).
@@ -1790,11 +1779,6 @@ class GarminClient:
             return fields
 
         return await self._summary_fields_cache.get(activity_id, _fetch)
-
-    async def _get_ebike_fields(self, activity_id: int) -> dict[str, Any]:
-        """E-bike fields of an activity (see _get_summary_fields)."""
-        fields = await self._get_summary_fields(activity_id)
-        return {key: fields[key] for key in EBIKE_ACTIVITY_KEYS if key in fields}
 
     async def get_activity_connect_iq_display_info(self, activity_id: int) -> list[Any]:
         """Get the Connect IQ field definitions used in an activity.

@@ -118,15 +118,6 @@ IOS_LOGIN_UA = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
 )
 
-# -- Android mobile app constants --
-ANDROID_SSO_CLIENT_ID = "GCM_ANDROID_DARK"
-ANDROID_SERVICE_URL = "https://mobile.integration.garmin.com/gcm/android"
-ANDROID_LOGIN_UA = (
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Mobile Safari/537.36"
-)
-
 # -- Portal (fallback) constants --
 PORTAL_SSO_CLIENT_ID = "GarminConnect"
 DESKTOP_USER_AGENT = (
@@ -227,7 +218,6 @@ class GarminAuth:
         self._is_cn = is_cn
         domain = "garmin.cn" if is_cn else "garmin.com"
         self._sso = f"https://sso.{domain}"
-        self._connect = f"https://connect.{domain}"
         self._connectapi = f"https://connectapi.{domain}"
         self._portal_service_url = f"https://connect.{domain}/app"
         self._di_token_url = _DI_TOKEN_URL_TEMPLATE.format(domain=domain)
@@ -271,10 +261,6 @@ class GarminAuth:
                 "Accept": "application/json",
             }
         )
-
-    def get_api_base_url(self) -> str:
-        """Base URL for API requests."""
-        return self._connectapi
 
     async def _clear_auth_state(self) -> None:
         """Wipe in-memory tokens so the next strategy starts clean."""

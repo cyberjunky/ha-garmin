@@ -115,11 +115,6 @@ class TestGarminAuth:
         headers = auth.get_api_headers()
         assert headers["Authorization"] == "Bearer mytoken"
 
-    async def test_get_api_base_url(self):
-        """Test get_api_base_url returns connectapi.garmin.com."""
-        auth = GarminAuth()
-        assert "connectapi.garmin.com" in auth.get_api_base_url()
-
     async def test_verify_token_true_on_200(self):
         """A 200 from socialProfile means the token is accepted."""
         auth = GarminAuth()
