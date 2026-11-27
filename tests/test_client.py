@@ -1921,8 +1921,9 @@ class TestGarminClient:
     @pytest.mark.parametrize(
         ("raw", "expected"),
         [
-            (1640960152000, 52),  # 52 years in ms, after a FIT upload
-            (2177427894000, 69),  # 69 years in ms, from a third-party scale
+            (1640960152000, 52.0),  # 52 years in ms, after a FIT upload
+            (2177427894000, 69.0),  # 69 years in ms, from a third-party scale
+            (1656738615000, 52.5),  # half years survive the conversion
             (38, 38),
             (38.0, 38.0),
             (150, 150),

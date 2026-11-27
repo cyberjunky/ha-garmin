@@ -937,10 +937,11 @@ def _vo2max_sport_entry(most_recent_vo2: dict[str, Any]) -> dict[str, Any]:
 
 # Garmin returns metabolicAge in years for some measurements and as a
 # duration in milliseconds for others (FIT uploads, some scale imports):
-# 1640960152000 ms is 52 years. No age in years exceeds the cap, so a larger
-# value is milliseconds.
+# 1640960152000 ms is exactly 52 years of 365.2422 days (the tropical year
+# Garmin converts with). No age in years exceeds the cap, so a larger value
+# is milliseconds.
 _METABOLIC_AGE_MAX_YEARS = 150
-_MS_PER_YEAR = 31_556_952_000  # one Gregorian year (365.2425 days)
+_MS_PER_YEAR = 31_556_926_000  # 365.2422 days
 
 
 def _sanitize_body_composition(measurement: dict[str, Any]) -> dict[str, Any]:
@@ -954,7 +955,7 @@ def _sanitize_body_composition(measurement: dict[str, Any]) -> dict[str, Any]:
     if isinstance(metabolic_age, bool) or not isinstance(metabolic_age, (int, float)):
         return {**measurement, "metabolicAge": None}
     if metabolic_age > _METABOLIC_AGE_MAX_YEARS:
-        metabolic_age = round(metabolic_age / _MS_PER_YEAR)
+        metabolic_age = round(metabolic_age / _MS_PER_YEAR, 1)
     if not 0 < metabolic_age <= _METABOLIC_AGE_MAX_YEARS:
         return {**measurement, "metabolicAge": None}
     return {**measurement, "metabolicAge": metabolic_age}
