@@ -15,7 +15,6 @@ USER_SETTINGS_URL = (
 ACTIVITIES_URL = (
     f"{GARMIN_CONNECT_API}/activitylist-service/activities/search/activities"
 )
-ACTIVITIES_BY_DATE_URL = f"{GARMIN_CONNECT_API}/activitylist-service/activities/byDate"
 ACTIVITY_DETAILS_URL = f"{GARMIN_CONNECT_API}/activity-service/activity"
 WORKOUTS_URL = f"{GARMIN_CONNECT_API}/workout-service/workouts"
 WORKOUT_URL = f"{GARMIN_CONNECT_API}/workout-service/workout"
@@ -53,9 +52,6 @@ WEIGHT_LATEST_URL = f"{GARMIN_CONNECT_API}/weight-service/weight/latest"
 TRAINING_READINESS_URL = (
     f"{GARMIN_CONNECT_API}/metrics-service/metrics/trainingreadiness"
 )
-MORNING_TRAINING_READINESS_URL = (
-    f"{GARMIN_CONNECT_API}/metrics-service/metrics/trainingreadiness/report"
-)
 TRAINING_STATUS_URL = (
     f"{GARMIN_CONNECT_API}/metrics-service/metrics/trainingstatus/aggregated"
 )
@@ -72,13 +68,10 @@ POWER_TO_WEIGHT_URL = (
 
 # Device endpoints
 DEVICES_URL = f"{GARMIN_CONNECT_API}/device-service/deviceregistration/devices"
-DEVICE_ALARMS_URL = f"{GARMIN_CONNECT_API}/device-service/devices/alarms"
 DEVICE_SOLAR_URL = f"{GARMIN_CONNECT_API}/web-gateway/solar"
 DEVICE_LAST_USED_URL = f"{GARMIN_CONNECT_API}/device-service/deviceservice/mylastused"
 
 # Respiration and SPO2 endpoints
-RESPIRATION_URL = f"{GARMIN_CONNECT_API}/wellness-service/wellness/daily/respiration"
-SPO2_URL = f"{GARMIN_CONNECT_API}/wellness-service/wellness/dailySpo2"
 
 # Goals & Gamification endpoints
 GOALS_URL = f"{GARMIN_CONNECT_API}/goal-service/goal/goals"
@@ -97,7 +90,6 @@ MENSTRUAL_CALENDAR_URL = f"{GARMIN_CONNECT_API}/periodichealth-service/menstrual
 # Nutrition endpoints
 NUTRITION_QUICK_ADD_URL = f"{GARMIN_CONNECT_API}/nutrition-service/food/logs/quickAdd"
 NUTRITION_LOGS_URL = f"{GARMIN_CONNECT_API}/nutrition-service/food/logs"
-NUTRITION_MEALS_URL = f"{GARMIN_CONNECT_API}/nutrition-service/meal/meals"
 
 # Upload/Write endpoints
 UPLOAD_URL = f"{GARMIN_CONNECT_API}/upload-service/upload"
@@ -118,4 +110,3 @@ DEFAULT_HEADERS = {
 }
 
 # China domain
-GARMIN_CN_CONNECT_API = "https://connect.garmin.cn/gc-api"

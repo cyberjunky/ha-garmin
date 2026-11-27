@@ -215,6 +215,8 @@ The method automatically fetches the correct meal slot ID and time for the day. 
 | `get_power_to_weight(target_date)` | FTP / power-to-weight data |
 | `get_goals()` | User goals by status |
 | `get_earned_badges()` | Earned badges |
+| `get_training_plans()` | Training plans, such as an active Garmin Coach plan (response shape not verified yet) |
+| `get_adaptive_training_plan_by_id(plan_id)` | One adaptive (Garmin Coach) training plan's detail (response shape not verified yet) |
 | `get_lifetime_totals()` | Lifetime distance, steps, calories and active days. Garmin answers 403 unless "Lifetime Totals" is shown in the user's Garmin Connect profile (Account Settings → Public Profile → Show in profile; the profile can stay private) |
 | `get_dogs()` | Dog profiles on the account as `{id, exclude_physio}` (Garmin returns no names); activities carry `hasDog` and `dogProfileIds` |
 | `get_gear_list()` | Active and retired gear with usage totals and notes (gear v2) |
