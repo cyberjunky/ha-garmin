@@ -1173,6 +1173,10 @@ class GarminAuth:
 
         failures: list[str] = []
         rate_limited_count = 0
+        # Set when an endpoint answered with a real verdict on the code. Without
+        # one, every failure was a network error, a block or a server error, so
+        # the code itself may be fine and must not be reported as wrong.
+        rejected = False
 
         for mfa_url, params, headers in mfa_endpoints:
             try:
@@ -1216,17 +1220,22 @@ class GarminAuth:
                 await self._exchange_service_ticket(ticket, service_url=svc_url)
                 return
 
-            # Non-success JSON response — could be auth failure. Record only
+            if r.status_code >= 500:
+                failures.append(f"{mfa_url}: HTTP {r.status_code}")
+                continue
+
+            # Non-success JSON response — the code was refused. Record only
             # the error status, never the raw body (may contain PII).
             status = res.get("error", {}).get("status-code", "unexpected response")
             failures.append(f"{mfa_url}: {status}")
+            rejected = True
 
         # All endpoints failed
-        if rate_limited_count == len(mfa_endpoints):
-            raise GarminRateLimitError(
-                f"MFA verification rate limited on all endpoints: {failures}"
-            )
-        raise GarminAuthError(f"MFA verification failed: {failures}")
+        if rejected:
+            raise GarminAuthError(f"MFA verification failed: {failures}")
+        if rate_limited_count:
+            raise GarminRateLimitError(f"MFA verification rate limited: {failures}")
+        raise GarminAPIError(f"MFA verification could not reach Garmin: {failures}")
 
     # ------------------------------------------------------------------ #
     #  DI TOKEN EXCHANGE                                                  #
@@ -1241,6 +1250,9 @@ class GarminAuth:
         di_token = None
         di_refresh = None
         di_client_id = None
+        # A 5xx or an unusable 200 says nothing about the ticket, so it must not
+        # end as an auth error: login() would stop the strategy chain on it.
+        transient_status: int | None = None
 
         for client_id in DI_CLIENT_IDS:
             r = await _http_post(
@@ -1269,6 +1281,8 @@ class GarminAuth:
                 _LOGGER.debug(
                     "DI exchange failed for %s: HTTP %s", client_id, r.status_code
                 )
+                if r.status_code >= 500:
+                    transient_status = r.status_code
                 continue
             try:
                 data = r.json()
@@ -1282,9 +1296,15 @@ class GarminAuth:
                     client_id,
                     _sanitize_exception_text(e),
                 )
+                transient_status = r.status_code
                 continue
 
         if not di_token:
+            if transient_status is not None:
+                raise GarminAPIError(
+                    f"DI token exchange failed: HTTP {transient_status}",
+                    status_code=transient_status,
+                )
             raise GarminAuthError("DI token exchange failed for all client IDs")
 
         self.di_token = di_token

@@ -799,6 +799,45 @@ class TestGarminAuth:
         assert not auth.is_authenticated
         assert auth._mfa_pending is False
 
+    @pytest.mark.parametrize(
+        ("posts", "expected"),
+        [
+            pytest.param(
+                [OSError("reset"), OSError("reset")], GarminAPIError, id="network"
+            ),
+            pytest.param(
+                [_resp(403, "<html>"), _resp(200, "<html>")],
+                GarminAPIError,
+                id="non-json",
+            ),
+            pytest.param(
+                [
+                    _resp(503, json_body={"error": {"status-code": "503"}}),
+                    _resp(502, "bad gateway"),
+                ],
+                GarminAPIError,
+                id="5xx",
+            ),
+            pytest.param(
+                [_resp(429), OSError("reset")], GarminRateLimitError, id="partly-429"
+            ),
+            pytest.param(
+                [_resp(200, json_body={"error": {"status-code": "401"}}), OSError("x")],
+                GarminAuthError,
+                id="refused-on-one",
+            ),
+        ],
+    )
+    async def test_complete_mfa_classifies_failures(self, posts, expected):
+        """Only a refused code is an auth error; network trouble, Cloudflare
+        pages and 5xx must not look like a wrong code."""
+        auth = GarminAuth()
+        await self._login_until_mfa(auth, posts)
+        with pytest.raises(GarminConnectError) as exc_info:
+            await auth.complete_mfa("123456")
+        assert type(exc_info.value) is expected
+        assert auth._mfa_pending is False
+
     async def test_complete_mfa_without_pending_session(self):
         with pytest.raises(GarminAuthError, match="No pending MFA session"):
             await GarminAuth().complete_mfa("123456")
@@ -992,6 +1031,28 @@ async def test_di_exchange_rate_limit_stops():
     ):
         await auth._exchange_service_ticket("ST-1")
     post.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "responses",
+    [
+        pytest.param([_resp(503)] * 4, id="5xx"),
+        pytest.param([_resp(400)] * 3 + [_resp(502)], id="4xx-then-5xx"),
+        pytest.param([_resp(200, "<html>")] * 4, id="non-json"),
+    ],
+)
+async def test_di_exchange_transient_failure_is_not_auth_error(responses):
+    """A server error says nothing about the ticket; login() must be able to
+    move on to the next strategy instead of stopping on an auth error."""
+    auth = GarminAuth()
+    post = AsyncMock(side_effect=responses)
+    with (
+        patch("ha_garmin.auth._http_post", post),
+        pytest.raises(GarminAPIError) as exc_info,
+    ):
+        await auth._exchange_service_ticket("ST-1")
+    assert exc_info.value.status_code == responses[-1].status_code
+    assert not auth.is_authenticated
 
 
 # ── Review follow-ups ─────────────────────────────────────────────────────────
